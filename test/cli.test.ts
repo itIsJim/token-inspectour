@@ -36,11 +36,11 @@ test('freePort skips ports that are in use', async () => {
 });
 
 test('agent names become route slugs; the proxy strips the agent prefix', () => {
-  assert.equal(slugify('My Agent Project'), 'my-agent-project');
+  assert.equal(slugify('My Agent'), 'my-agent');
   assert.equal(slugify('v1'), 'agent');
   assert.equal(slugify(''), 'agent');
-  assert.deepEqual(splitAgentPrefix('/growth/v1/messages?beta=true'), { agent: 'growth', path: '/v1/messages?beta=true' });
+  assert.deepEqual(splitAgentPrefix('/agent-a/v1/messages?beta=true'), { agent: 'agent-a', path: '/v1/messages?beta=true' });
   assert.deepEqual(splitAgentPrefix('/v1/messages?beta=true'), { agent: null, path: '/v1/messages?beta=true' });
   assert.deepEqual(splitAgentPrefix('/api/hello'), { agent: null, path: '/api/hello' });
-  assert.deepEqual(splitAgentPrefix('/sales.bot/api/hello'), { agent: 'sales.bot', path: '/api/hello' });
+  assert.deepEqual(splitAgentPrefix('/agent.b/api/hello'), { agent: 'agent.b', path: '/api/hello' });
 });

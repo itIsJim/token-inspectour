@@ -27,7 +27,7 @@ Claude Code assembles a large prompt on your behalf: a harness system prompt, se
 Requires Node 18.17 or later and a working `claude` login.
 
 ```sh
-git clone https://github.com/<you>/token-inspectour.git
+git clone https://github.com/itIsJim/token-inspectour.git
 cd token-inspectour
 npm install       # installs the TypeScript compiler and builds dist/
 npm link          # makes the `token-inspectour` command available
@@ -56,12 +56,12 @@ Run one inspector per agent, each in its own terminal:
 
 ```sh
 # terminal 1
-token-inspectour ~/agents/growth
+token-inspectour ~/projects/agent-a
 # terminal 2
-token-inspectour ~/agents/sales
+token-inspectour ~/projects/agent-b
 ```
 
-Each instance takes the next free proxy and UI port pair (4141/4142, then 4143/4144, and so on) and is served under its agent's name, so the tabs read `http://127.0.0.1:4142/growth/` and `http://127.0.0.1:4144/sales/`. Each UI lists only its own agent's sessions. The name defaults to the project folder; override it with `--name`.
+Each instance takes the next free proxy and UI port pair (4141/4142, then 4143/4144, and so on) and is served under its agent's name, so the tabs read `http://127.0.0.1:4142/agent-a/` and `http://127.0.0.1:4144/agent-b/`. Each UI lists only its own agent's sessions. The name defaults to the project folder; override it with `--name`.
 
 ### Proxy-only mode (advanced)
 
@@ -74,8 +74,8 @@ token-inspectour --proxy-only -p 4141
 Then, from any project, on one line:
 
 ```sh
-cd ~/agents/growth && ANTHROPIC_BASE_URL=http://127.0.0.1:4141/growth claude
-cd ~/agents/sales  && ANTHROPIC_BASE_URL=http://127.0.0.1:4141/sales  claude
+cd ~/projects/agent-a && ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
+cd ~/projects/agent-b && ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-b claude
 ```
 
 The path segment after the port names the agent. The proxy strips it before forwarding and records it on every capture, so the sessions of both agents show up labelled in the hub's UI.

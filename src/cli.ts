@@ -39,11 +39,11 @@ Usage: token-inspectour [projectDir] [options] [-- claude args…]
   -h, --help            Show this help
 
 Examples:
-  token-inspectour ~/agents/growth                 # terminal 1: growth agent + its UI
-  token-inspectour ~/agents/sales                  # terminal 2: sales agent + a second UI
-  token-inspectour ~/agents/growth -- -p "status"  # one headless prompt through the proxy
-  token-inspectour --proxy-only -p 4141            # plain proxy; attach agents manually:
-      ANTHROPIC_BASE_URL=http://127.0.0.1:4141/growth claude
+  token-inspectour ~/projects/agent-a                 # terminal 1: first agent + its UI
+  token-inspectour ~/projects/agent-b                 # terminal 2: second agent + a second UI
+  token-inspectour ~/projects/agent-a -- -p "status"  # one headless prompt through the proxy
+  token-inspectour --proxy-only -p 4141               # plain proxy; attach agents manually:
+      ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
 `;
 
 export interface Options {
