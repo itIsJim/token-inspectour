@@ -38,12 +38,12 @@ export class Store extends EventEmitter {
       this.sessions.set(id, s);
       this.emit('session', s);
     }
-    if (meta.projectDir && !s.projectDir) s.projectDir = meta.projectDir;
+    if (meta.projectDir && (!s.projectDir || meta.projectDetected)) s.projectDir = meta.projectDir;
     return s;
   }
 
   #add(rec, emit = true) {
-    const s = this.session(rec.sessionId, { startedAt: rec.startedAt, projectDir: rec.projectDir });
+    const s = this.session(rec.sessionId, { startedAt: rec.startedAt, projectDir: rec.projectDir, projectDetected: rec.projectDetected });
     if (!this.requests.has(rec.id)) {
       s.requests.push(rec.id);
       this.requests.set(rec.id, rec);

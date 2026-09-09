@@ -2,7 +2,7 @@
 
 See what Claude Code actually sends to the model.
 
-`token-inspectour` is a local proxy plus a browser UI. You point it at an agent project folder and run Claude Code through it. Every API call the binary makes is captured, and every span of the request is mapped back to the file that produced it: the `CLAUDE.md` chain, rules, skills, slash commands, agents, hooks, MCP servers, auto-memory, plugins, and the built-in harness. Each part carries an exact token count, so you can see where the context window goes, how it changes from step to step, and which of your project files are actually reaching the model.
+`token-inspectour` is a local proxy plus a browser UI. You start it once and run Claude Code through it from any project. Every API call the binary makes is captured, and every span of the request is mapped back to the file that produced it: the `CLAUDE.md` chain, rules, skills, slash commands, agents, hooks, MCP servers, auto-memory, plugins, and the built-in harness. Each part carries an exact token count, so you can see where the context window goes, how it changes from step to step, and which of your project files are actually reaching the model.
 
 ```
 ┌─────────────┐  ANTHROPIC_BASE_URL   ┌──────────────────┐  forwards   ┌──────────────────┐
@@ -21,22 +21,27 @@ See what Claude Code actually sends to the model.
 Requires Node 18.17+ and a working `claude` login. No dependencies to install.
 
 ```sh
-# 1. start the inspector, pointed at the project you want to understand
-node bin/token-inspectour.js ~/path/to/agent-project --open
+# 1. start the inspector (any directory; keep it running)
+node bin/token-inspectour.js --open
 
-# 2. in another terminal, run Claude Code through the proxy
-cd ~/path/to/agent-project
-ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude
+# 2. in another terminal, run Claude Code through the proxy from any agent project
+cd ~/path/to/agent-project && ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude
 ```
 
-Or let the inspector launch Claude Code for you (arguments after `--run` go to `claude`):
+Keep both commands on one line each. Or let the inspector launch Claude Code for you in a given project (arguments after `--run` go to `claude`):
 
 ```sh
-node bin/token-inspectour.js ~/path/to/agent-project --run
+node bin/token-inspectour.js ~/path/to/agent-project --open --run
 node bin/token-inspectour.js ~/path/to/agent-project --run -p "summarize the repo"
 ```
 
-Open http://127.0.0.1:4142. Each API call shows up on the left as it happens.
+Open http://127.0.0.1:4142. Each API call shows up on the left as it happens, grouped by session and labelled with the project it came from.
+
+### Works with any agent
+
+The proxy is project-agnostic. Each session's project directory is read from the request itself (the harness tells the model its working directory; the `CLAUDE.md` paths are the fallback), and an inventory is scanned per detected project on first sight. You can run several agents through one proxy at the same time. A project with no `.claude/` of its own still gets a meaningful inventory: the parent `CLAUDE.md` chain, user-level skills, agents, settings, memory, and plugins.
+
+Subagent turns (the Agent tool) are captured like any other call and labelled with the agent definition whose body appears in their system prompt. Skill invocations and file reads are attributed to the skill or file they came from.
 
 ## What you see
 
@@ -77,6 +82,9 @@ The analyzer (`src/analyze.js`) then matches request text against that inventory
 | `partial` | a file located by its first 120 chars and extended by longest common prefix, reported with coverage |
 | `listing` | one line per skill, command, or agent in the harness listings; one section per server under `# MCP Server Instructions` |
 | tool name | `mcp__<server>__<tool>` resolved to the MCP source; `claude_ai_*` servers are claude.ai connectors |
+| `tool-read` | a `Read` tool result, attributed to the file (or the skill whose folder contains it) |
+| `skill-invoke` | a `Skill` tool result, attributed to the invoked skill or command |
+| subagent | an agent definition body found in a request's system prompt labels that call `subagent: <name>` |
 
 Anything left over inside a reminder is `reminder`, inside the system prompt is `harness`, in a user turn is `user`, and so on. Side calls that Claude Code makes (session-title generation, compaction) are captured and labelled separately from agent turns.
 
@@ -85,6 +93,7 @@ Anything left over inside a reminder is `reminder`, inside the system prompt is 
 ```
 token-inspectour [projectDir] [options]
 
+  projectDir            Default project (default: cwd); each session's project is detected
   -p, --port <n>        Proxy port Claude Code connects to        (default 4141)
   -u, --ui <n>          UI port                                   (default 4142)
   --upstream <url>      Real API base URL                         (default https://api.anthropic.com)

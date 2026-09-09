@@ -7,7 +7,7 @@ const inventory = {
   sources: [
     { id: 'cm1', kind: 'claude-md', name: 'CLAUDE.md', path: '/p/CLAUDE.md', scope: 'project', body: '# Project rules\n\nAlways be terse.\nNever push to remote branches.', content: '# Project rules\n\nAlways be terse.\nNever push to remote branches.', size: 60 },
     { id: 'sk1', kind: 'skill', name: 'deploy', path: '/p/.claude/skills/deploy/SKILL.md', scope: 'project', description: 'Deploy the app', body: 'Run the deploy script and check the health endpoint afterwards. Report the version.', content: '---\nname: deploy\n---\nRun the deploy script and check the health endpoint afterwards. Report the version.', size: 110 },
-    { id: 'ag1', kind: 'agent', name: 'researcher', path: '/p/.claude/agents/researcher.md', scope: 'project', body: 'You research things.', content: 'You research things.', size: 20 },
+    { id: 'ag1', kind: 'agent', name: 'researcher', path: '/p/.claude/agents/researcher.md', scope: 'project', body: 'You research things carefully and report back with sources and confidence levels.', content: 'You research things carefully and report back with sources and confidence levels.', size: 80 },
     { id: 'cmd1', kind: 'command', name: 'ship', path: '/p/.claude/commands/ship.md', scope: 'project', body: 'Ship it now please and thank you very much indeed.', content: 'Ship it now please and thank you very much indeed.', size: 50 },
     { id: 'mcp1', kind: 'mcp', name: '.mcp.json', path: '/p/.mcp.json', scope: 'project', body: '{}', content: '{}', size: 2, servers: [{ name: 'my-db', sanitized: 'my-db', config: {} }] },
   ],
@@ -125,4 +125,53 @@ test('exact counting uses the counter and distributes tokens to spans', async ()
   const reminderPart = parts.find((p) => p.id === 'msg.0.0');
   const sum = reminderPart.spans.reduce((a, s) => a + s.tokens, 0);
   assert.ok(Math.abs(sum - reminderPart.tokens) <= reminderPart.spans.length);
+});
+
+import { detectProjectDir, analyzeRequest } from '../src/analyze.js';
+
+test('detects the project directory from the environment reminder or the CLAUDE.md chain', () => {
+  const env = { system: 'x', messages: [{ role: 'system', content: [{ type: 'text', text: '<system-reminder>\n# Environment\n - Primary working directory: /Users/me/proj/sub\n - Is a git repository: true\n</system-reminder>' }] }] };
+  assert.equal(detectProjectDir(env), '/Users/me/proj/sub');
+  const chain = { system: 'x', messages: [{ role: 'user', content: '<system-reminder>\nContents of /a/CLAUDE.md (project instructions, checked into the codebase):\n\nA\n\nContents of /a/b/c/CLAUDE.md (project instructions, checked into the codebase):\n\nC\n</system-reminder>' }] };
+  assert.equal(detectProjectDir(chain), '/a/b/c');
+  assert.equal(detectProjectDir({ system: 'nothing', messages: [] }), null);
+});
+
+test('attributes Read and Skill tool results to their files; labels subagent turns', async () => {
+  const skill = inventory.sources[1];
+  const b = {
+    model: 'm',
+    system: [{ type: 'text', text: inventory.sources[2].body + '\n\nExtra instructions from the harness for this subagent.' }],
+    tools: [{ name: 'Read', description: 'r', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/p/CLAUDE.md' } }, { type: 'tool_use', id: 'r2', name: 'Read', input: { file_path: '/p/.claude/skills/deploy/reference.md' } }, { type: 'tool_use', id: 's1', name: 'Skill', input: { skill: 'deploy' } }, { type: 'tool_use', id: 'b1', name: 'Bash', input: { command: 'ls' } }] },
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'r1', content: '     1\t# Project rules\n     2\t' },
+        { type: 'tool_result', tool_use_id: 'r2', content: 'reference material' },
+        { type: 'tool_result', tool_use_id: 's1', content: 'Launching skill: deploy\n\n' + skill.body },
+        { type: 'tool_result', tool_use_id: 'b1', content: 'a\nb' },
+      ] },
+    ],
+  };
+  const invWithDir = { ...inventory, sources: inventory.sources.map((s) => (s.id === 'sk1' ? { ...s, dir: '/p/.claude/skills/deploy' } : s)) };
+  const a = await analyzeRequest({ body: b, response: null }, invWithDir, null, null, {});
+  assert.equal(a.kind, 'main');
+  assert.equal(a.label, 'subagent: researcher');
+  assert.equal(a.agent, 'researcher');
+  const res = (i) => a.parts.find((p) => p.id === `msg.2.${i}`);
+  assert.equal(res(0).spans[0].sourceId, 'cm1');
+  assert.equal(res(0).spans[0].match, 'tool-read');
+  assert.equal(res(0).label, 'CLAUDE.md read: CLAUDE.md');
+  assert.equal(res(1).spans[0].sourceId, 'sk1'); // file inside the skill dir counts toward the skill
+  assert.equal(res(1).spans[0].kind, 'file');
+  const inv = res(2);
+  assert.ok(inv.spans.every((s) => s.sourceId === 'sk1'));
+  assert.ok(inv.spans.some((s) => s.match === 'exact'));
+  assert.ok(inv.spans.some((s) => s.match === 'skill-invoke'));
+  assert.equal(res(3).spans[0].kind, 'tool-result');
+  assert.equal(res(3).label, 'tool result: Bash: ls');
+  const tu = a.parts.find((p) => p.id === 'msg.1.0');
+  assert.equal(tu.label, 'tool call: Read: /p/CLAUDE.md');
+  assert.ok(a.totals.sourceUsage.ag1.used);
 });

@@ -138,12 +138,15 @@ const S = {
 async function api(p, opt){ const r = await fetch(p, opt); if(!r.ok) throw new Error(p+' '+r.status); return r.json(); }
 function kindColor(k){ return (S.kinds[k]||{}).color || '#94a3b8'; }
 function kindLabel(k){ return (S.kinds[k]||{}).label || k; }
-function srcById(id){ return S.sources.find(s=>s.id===id) || (S.rec && S.rec.adhocSources||[]).find(s=>s.id===id); }
+function srcById(id){ return recSources().find(s=>s.id===id) || (S.rec && S.rec.adhocSources||[]).find(s=>s.id===id); }
+function recSources(){ return (S.rec && S.rec.inventory && S.rec.inventory.sources) || S.sources; }
+const short = (p) => (p||'').replace(/^\/Users\/[^/]+/, '~');
 
 async function loadState(){
   S.state = await api('/api/state');
   S.kinds = S.state.kinds; S.sources = S.state.inventory.sources; S.sessions = S.state.sessions;
-  $('#h-project').textContent = S.state.projectDir.replace(/^\/Users\/[^/]+/, '~');
+  $('#h-project').textContent = short(S.state.projectDir) + (S.state.projects.length>1 ? ` (+${S.state.projects.length-1} detected)` : '');
+  $('#h-project').title = 'default project; each session\'s project is detected from its requests:\n' + S.state.projects.map(short).join('\n');
   const cmd = `ANTHROPIC_BASE_URL=${S.state.proxyUrl} claude`;
   $('#h-cmd').textContent = cmd; $('#l-cmd').textContent = cmd;
   renderHeaderPills(); renderLeft();
@@ -167,7 +170,7 @@ function renderLeft(){
     const last = main[main.length-1];
     const tot = last && last.usage ? (last.usage.input||0)+(last.usage.cacheRead||0)+(last.usage.cacheWrite||0) : null;
     return `<div class="sess ${open?'sel':''}" data-id="${s.id}">
-      <div class="hd" data-sess="${s.id}"><span>${open?'▾':'▸'}</span><span class="id">${esc(s.id.slice(0,8))}</span><span class="muted small">${new Date(s.startedAt).toLocaleString()}</span><span class="grow"></span><span class="small mono">${s.requests.length} calls${tot?` · ctx ${fmt(tot)}`:''}</span></div>
+      <div class="hd" data-sess="${s.id}" title="${esc(s.projectDir||'')}"><span>${open?'▾':'▸'}</span><b>${esc((s.projectDir||'').split('/').pop()||s.id.slice(0,8))}</b><span class="muted small">${new Date(s.startedAt).toLocaleString()}</span><span class="grow"></span><span class="small mono">${s.requests.length} calls${tot?` · ctx ${fmt(tot)}`:''}</span></div>
       ${open ? s.requests.map(r => reqRow(r)).join('') : ''}
     </div>`;
   }).join('');
@@ -181,7 +184,7 @@ function reqRow(r){
   const st = r.status==null ? '<span class="pill warn">…</span>' : r.status>=400 ? `<span class="pill bad">${r.status}</span>` : '';
   return `<div class="req ${side?'side':''} ${r.id===S.sel?'sel':''}" data-id="${r.id}">
     <span class="seq">#${r.seq}</span>
-    <span>${side?`<span class="pill">${esc(r.kind.replace('side:',''))}</span>`:`<b>turn</b>`} <span class="muted small">${esc((r.model||'').replace('claude-',''))}</span> ${st}</span>
+    <span>${side?`<span class="pill">${esc(r.kind.replace('side:',''))}</span>`:r.kind.startsWith('main:')?`<b>${esc(r.kind.slice(5))}</b>`:`<b>turn</b>`} <span class="muted small">${esc((r.model||'').replace('claude-',''))}</span> ${st}</span>
     <span class="tok" title="prompt tokens from usage: uncached + cache read + cache write | output">${tot!=null?fmt(tot):'…'}${u.output!=null?` <span class="muted">→${fmt(u.output)}</span>`:''}</span>
     <span class="prev">${esc(r.userPreview||'')}${r.assistantPreview?` <span class="muted">⇢ ${esc(r.assistantPreview)}</span>`:''}</span>
   </div>`;
@@ -295,12 +298,12 @@ function wireSpans(el, p){
 function renderSources(v, rec){
   const a = rec.analysis;
   const usage = a.totals.sourceUsage;
-  const all = [...S.sources, ...(a.adhocSources||[])];
+  const all = [...recSources(), ...(a.adhocSources||[])];
   const rows = all.map(s => ({s, u: usage[s.id] || {used:false,tokens:0,chars:0,spans:0,parts:[],matches:{},coverage:0}}))
     .sort((x,y)=> (y.u.tokens - x.u.tokens) || x.s.kind.localeCompare(y.s.kind) || x.s.name.localeCompare(y.s.name));
   const used = rows.filter(r=>r.u.used);
   const stepsFor = sessionStepsBySource();
-  v.innerHTML = summaryBlock(rec) + `<div class="small muted" style="margin-bottom:8px">${used.length} of ${all.length} inventory sources appear in this request. Hover a row to see where it lands; click to open the file. "coverage" = how much of the file is present verbatim; "steps" = which calls in this session include it.</div>
+  v.innerHTML = summaryBlock(rec) + `<div class="small muted" style="margin-bottom:8px">Project <b class="mono">${esc(short(rec.projectDir))}</b> · ${used.length} of ${all.length} inventory sources appear in this request. Hover a row to see where it lands; click to open the file. "coverage" = how much of the file is present verbatim; "steps" = which calls in this session include it.</div>
   <table><thead><tr><th></th><th>source</th><th>scope</th><th class="num">file size</th><th class="num">tokens here</th><th class="num">share</th><th class="num">coverage</th><th>match</th><th>where</th><th>steps</th></tr></thead><tbody>
   ${rows.map(({s,u}) => `<tr class="click ${u.used?'':'unused'}" data-src="${s.id}">
     <td><span class="k" style="background:${kindColor(s.kind)}"></span></td>

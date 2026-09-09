@@ -56,6 +56,7 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
           upstream: ctx.upstream,
           counter: { ready: ctx.counter.ready, enabled: ctx.counter.enabled, stats: ctx.counter.stats, cacheSize: ctx.counter.cache.size, queue: ctx.counter.queue.length + ctx.counter.active },
           inventory: { scannedAt: ctx.inventory().scannedAt, sources: ctx.inventory().sources.map((s) => publicSource(s)) },
+          projects: ctx.projects(),
           kinds: ctx.kinds,
           sessions: ctx.store.listSessions(),
           version: ctx.version,
@@ -68,7 +69,8 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
         if (!rec) return json(res, 404, { error: 'not found' });
         const { _auth, body, ...rest } = rec;
         const full = url.searchParams.get('full') === '1';
-        return json(res, 200, { ...rest, analysis: full ? rec.analysis : slimAnalysis(rec.analysis), bodySizes: sizes(body), adhocSources: rec.analysis ? rec.analysis.adhocSources : [] });
+        const inv = ctx.inventory(rec.projectDir);
+        return json(res, 200, { ...rest, analysis: full ? rec.analysis : slimAnalysis(rec.analysis), bodySizes: sizes(body), adhocSources: rec.analysis ? rec.analysis.adhocSources : [], inventory: full ? { projectDir: inv.projectDir, scannedAt: inv.scannedAt, sources: inv.sources.map((s) => publicSource(s)) } : undefined });
       }
       if ((m = /^\/api\/requests\/([A-Za-z0-9]+)\/raw$/.exec(p))) {
         const rec = ctx.store.get(m[1]);
@@ -82,7 +84,7 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
         return json(res, 200, summarize(rec));
       }
       if ((m = /^\/api\/sources\/([A-Za-z0-9]+)$/.exec(p))) {
-        const src = ctx.inventory().sources.find((s) => s.id === m[1]);
+        const src = ctx.findSource(m[1]);
         if (!src) return json(res, 404, { error: 'not found' });
         return json(res, 200, publicSource(src, { withContent: true }));
       }

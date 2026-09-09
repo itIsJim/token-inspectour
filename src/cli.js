@@ -7,14 +7,15 @@ import { startUiServer } from './server.js';
 import { Store } from './store.js';
 import { TokenCounter } from './tokens.js';
 import { scanInventory, watchRoots, KINDS } from './inventory.js';
-import { analyzeRequest, classifyRequest } from './analyze.js';
-import { readJsonSafe } from './util.js';
+import { analyzeRequest, classifyRequest, detectProjectDir } from './analyze.js';
+import { readJsonSafe, exists } from './util.js';
 
 const HELP = `token-inspectour — see what Claude Code actually sends to the model
 
 Usage: token-inspectour [projectDir] [options]
 
-  projectDir            Agent project folder to inspect (default: cwd)
+  projectDir            Default project folder (default: cwd). Each session's real project is
+                        detected from the request itself, so any agent can run through one proxy.
   -p, --port <n>        Proxy port Claude Code connects to        (default 4141)
   -u, --ui <n>          UI port                                   (default 4142)
   --upstream <url>      Real API base URL                         (default https://api.anthropic.com)
@@ -73,26 +74,50 @@ export async function main(argv) {
   const counter = new TokenCounter({ upstream: o.upstream, persist: o.persist, log });
   counter.enabled = o.count;
 
-  let inventory = scanInventory(o.projectDir);
+  // One inventory per project directory. Projects are discovered from the requests
+  // themselves (environment reminder / CLAUDE.md paths), so a single proxy serves any agent.
+  const inventories = new Map();
+  const watched = new Set();
   const invListeners = new Set();
-  const rescan = () => {
-    inventory = scanInventory(o.projectDir);
-    log(`inventory: ${inventory.sources.length} sources`);
-    for (const l of invListeners) l(inventory);
-    return inventory;
-  };
-  log(`inventory: ${inventory.sources.length} sources in ${o.projectDir}`);
-
-  // watch config for changes
   let wt = null;
-  for (const root of watchRoots(o.projectDir)) {
-    try {
-      fs.watch(root, { recursive: true }, () => {
-        clearTimeout(wt);
-        wt = setTimeout(rescan, 400);
-      });
-    } catch {}
-  }
+  const rescan = () => {
+    for (const dir of inventories.keys()) inventories.set(dir, scanInventory(dir));
+    const inv = inventories.get(o.projectDir) || [...inventories.values()][0];
+    log(`inventory rescanned: ${[...inventories.entries()].map(([d, i]) => `${path.basename(d)}=${i.sources.length}`).join(', ')}`);
+    for (const l of invListeners) l(inv);
+    return inv;
+  };
+  const watchDir = (dir) => {
+    for (const root of watchRoots(dir)) {
+      if (watched.has(root)) continue;
+      watched.add(root);
+      try {
+        fs.watch(root, { recursive: true }, () => {
+          clearTimeout(wt);
+          wt = setTimeout(rescan, 400);
+        });
+      } catch {}
+    }
+  };
+  const getInventory = (dir) => {
+    dir = path.resolve(dir || o.projectDir);
+    let inv = inventories.get(dir);
+    if (!inv) {
+      inv = scanInventory(dir);
+      inventories.set(dir, inv);
+      watchDir(dir);
+      log(`inventory: ${inv.sources.length} sources in ${dir}`);
+    }
+    return inv;
+  };
+  getInventory(o.projectDir);
+  const findSource = (id) => {
+    for (const inv of inventories.values()) {
+      const s = inv.sources.find((x) => x.id === id);
+      if (s) return s;
+    }
+    return null;
+  };
 
   const prevMain = (rec) => {
     const s = store.sessions.get(rec.sessionId);
@@ -111,9 +136,9 @@ export async function main(argv) {
     if (rec._analyzing && !opts.force) return rec._analyzing;
     rec._analyzing = (async () => {
       try {
-        const a = await analyzeRequest(rec, inventory, counter, prevMain(rec), { exact: opts.exact !== false && counter.enabled });
+        const a = await analyzeRequest(rec, getInventory(rec.projectDir), counter, prevMain(rec), { exact: opts.exact !== false && counter.enabled });
         rec.analysis = a;
-        rec.kind = a.kind + (a.kind === 'side' ? `:${a.label}` : '');
+        rec.kind = a.kind + (a.kind === 'side' ? `:${a.label}` : a.label && a.label !== 'agent turn' ? `:${a.label}` : '');
         store.update(rec, 'analysis');
       } catch (e) {
         log(`analysis failed for ${rec.id}: ${e.stack || e}`);
@@ -127,7 +152,23 @@ export async function main(argv) {
   const onCapture = (phase, cap) => {
     if (phase === 'request') {
       counter.setAuthFromHeaders(cap._auth);
-      cap.projectDir = o.projectDir;
+      const detected = detectProjectDir(cap.body);
+      const sess = store.sessions.get(cap.sessionId);
+      const ok = detected && exists(detected);
+      cap.projectDir = ok ? detected : sess && sess.projectDir ? sess.projectDir : o.projectDir;
+      cap.projectDetected = ok;
+      if (ok && !inventories.has(path.resolve(detected))) log(`detected project: ${detected}`);
+      if (ok && sess && sess.projectDir !== detected) {
+        // the session was opened by a side call (no environment info); re-point it and its earlier calls
+        sess.projectDir = detected;
+        for (const rid of sess.requests) {
+          const r = store.get(rid);
+          if (r && !r.projectDetected && r.projectDir !== detected) {
+            r.projectDir = detected;
+            store.save(r);
+          }
+        }
+      }
       const cls = classifyRequest(cap.body);
       cap.kind = cls.kind + (cls.kind === 'side' ? `:${cls.label}` : '');
       cap.userPreview = preview(lastUserText(cap.body));
@@ -156,7 +197,9 @@ export async function main(argv) {
     counter,
     kinds: KINDS,
     version: pkg.version,
-    inventory: () => inventory,
+    inventory: (dir) => getInventory(dir),
+    projects: () => [...inventories.keys()],
+    findSource,
     rescan,
     analyze,
     onInventory: (l) => invListeners.add(l),
@@ -166,7 +209,7 @@ export async function main(argv) {
 
   process.stderr.write(`
   token-inspectour v${pkg.version}
-  project   ${o.projectDir}
+  project   ${o.projectDir}  (default; each session's project is detected from its requests)
   proxy     ${proxy.url}  →  ${o.upstream}
   UI        ${ui.url}
   counting  ${o.count ? 'exact via count_tokens (after the first captured request)' : 'estimates only'}

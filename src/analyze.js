@@ -21,6 +21,25 @@ export function classifyRequest(body) {
   return { kind: 'side', label: 'side call' };
 }
 
+// Where was Claude Code running? The harness tells the model in an environment reminder;
+// fall back to the deepest CLAUDE.md marked as project instructions.
+export function detectProjectDir(body) {
+  if (!body) return null;
+  const chunks = [systemText(body)];
+  for (const m of (body.messages || []).slice(0, 3)) {
+    const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : [];
+    for (const b of blocks) if (b.type === 'text') chunks.push(b.text || '');
+  }
+  const all = chunks.join('\n');
+  const m = /Primary working directory:\s*([^\n]+)/.exec(all);
+  if (m) return m[1].trim().replace(/[\s.]+$/, '');
+  let best = null;
+  const re = /Contents of ([^\n]+?)\/(?:\.claude\/)?CLAUDE(?:\.local)?\.md \(project instructions/g;
+  let mm;
+  while ((mm = re.exec(all))) if (!best || mm[1].length > best.length) best = mm[1];
+  return best;
+}
+
 function systemText(body) {
   const s = body.system;
   if (!s) return '';
@@ -96,7 +115,7 @@ class Spanner {
       while (cur < e) {
         const r = kindAt(cur);
         const next = r ? Math.min(e, r.end) : Math.min(e, ...regions.filter((x) => x.start > cur).map((x) => x.start));
-        out.push({ start: cur, end: next, kind: r ? r.kind : this.defaultKind, label: r ? r.label : this.defaultLabel, sourceId: r ? r.sourceId : undefined });
+        out.push({ start: cur, end: next, kind: r ? r.kind : this.defaultKind, label: r ? r.label : this.defaultLabel, sourceId: r ? r.sourceId : this.defaultSourceId, match: r ? r.match : this.defaultSourceId ? this.defaultMatch : undefined });
         cur = next;
       }
     };
@@ -128,8 +147,10 @@ function commonPrefixLen(a, b) {
   return i;
 }
 
-export function attributeText(text, { defaultKind, defaultLabel, inventory, adhoc }) {
+export function attributeText(text, { defaultKind, defaultLabel, inventory, adhoc, defaultSourceId, defaultMatch }) {
   const sp = new Spanner(text, defaultKind, defaultLabel);
+  sp.defaultSourceId = defaultSourceId;
+  sp.defaultMatch = defaultMatch;
   const regions = [];
   const byPath = new Map(inventory.sources.map((s) => [s.path, s]));
   const byName = (kind, name) => inventory.sources.find((s) => s.kind === kind && s.name === name);
@@ -255,7 +276,7 @@ export function buildParts(body, inventory) {
   const adhoc = (file, desc) => {
     let s = adhocSources.find((x) => x.path === file);
     if (s) return s;
-    const kind = /project instructions|instructions/i.test(desc) ? 'claude-md' : /memory/i.test(desc) ? 'memory' : 'file';
+    const kind = /project instructions/i.test(desc) ? 'claude-md' : /memory/i.test(desc) ? 'memory' : 'file';
     s = { id: 'x' + sha(file).slice(0, 11), kind, path: file, name: path.basename(file), scope: 'external', description: desc, size: 0, adhoc: true };
     adhocSources.push(s);
     return s;
@@ -298,19 +319,58 @@ export function buildParts(body, inventory) {
     });
   });
 
+  // tool_use id → call, so tool results can be attributed to the file / skill they came from
+  const calls = new Map();
+  for (const msg of body.messages || []) {
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+    for (const b of msg.content) if (b.type === 'tool_use') calls.set(b.id, { name: b.name, input: b.input || {} });
+  }
+  const byPath = new Map(inventory.sources.map((s) => [s.path, s]));
+  const describeCall = (c) => {
+    if (!c) return '';
+    const i = c.input;
+    const arg = i.file_path || i.path || i.skill || i.command || i.pattern || i.url || i.description || i.prompt || '';
+    return `${c.name}${arg ? ': ' + String(arg).slice(0, 80) : ''}`;
+  };
+
   (body.messages || []).forEach((msg, mi) => {
     const blocks = typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : Array.isArray(msg.content) ? msg.content : [];
     blocks.forEach((b, bi) => {
       const text = blockText(b);
       const bt = b.type || 'text';
       let defaultKind = msg.role === 'assistant' ? 'model' : msg.role === 'system' ? 'harness' : bt === 'tool_result' ? 'tool-result' : 'user';
-      let defaultLabel = msg.role === 'assistant' ? (bt === 'thinking' ? 'model thinking' : bt === 'tool_use' ? `tool call: ${b.name}` : 'model reply') : msg.role === 'system' ? 'mid-conversation system message' : bt === 'tool_result' ? 'tool result' : 'user message';
+      let defaultLabel = msg.role === 'assistant' ? (bt === 'thinking' ? 'model thinking' : bt === 'tool_use' ? `tool call: ${describeCall({ name: b.name, input: b.input || {} })}` : 'model reply') : msg.role === 'system' ? 'mid-conversation system message' : bt === 'tool_result' ? 'tool result' : 'user message';
+      let defaultSourceId;
+      let defaultMatch;
+      let call = null;
+      if (bt === 'tool_result') {
+        call = calls.get(b.tool_use_id) || null;
+        defaultLabel = call ? `tool result: ${describeCall(call)}` : 'tool result';
+        if (call && /^(Read|NotebookRead)$/.test(call.name) && call.input.file_path) {
+          const file = String(call.input.file_path);
+          let src = byPath.get(file) || inventory.sources.find((x) => x.dir && file.startsWith(x.dir + '/'));
+          if (!src) src = adhoc(file, 'file read via Read tool');
+          defaultKind = src.kind === 'skill' && !byPath.get(file) ? 'file' : src.kind;
+          defaultSourceId = src.id;
+          defaultMatch = 'tool-read';
+          defaultLabel = `${KINDS[defaultKind]?.label || defaultKind} read: ${path.basename(file)}`;
+        } else if (call && call.name === 'Skill' && call.input.skill) {
+          const name = String(call.input.skill).replace(/^\//, '');
+          const src = inventory.sources.find((x) => (x.kind === 'skill' || x.kind === 'command') && (x.name === name || x.name === name.split(':').pop()));
+          if (src) {
+            defaultKind = src.kind;
+            defaultSourceId = src.id;
+            defaultMatch = 'skill-invoke';
+            defaultLabel = `${src.kind} invoked: ${src.name}`;
+          }
+        }
+      }
       const spans = bt === 'text' || bt === 'tool_result' || msg.role === 'system'
-        ? attributeText(text, { defaultKind, defaultLabel, inventory: inv, adhoc })
+        ? attributeText(text, { defaultKind, defaultLabel, inventory: inv, adhoc, defaultSourceId, defaultMatch })
         : [{ start: 0, end: text.length, kind: defaultKind, label: defaultLabel }];
       parts.push({
         id: `msg.${mi}.${bi}`, area: 'messages', index: mi, sub: bi, role: msg.role, blockType: bt, cache: !!b.cache_control,
-        name: b.name, toolUseId: b.tool_use_id || b.id, isError: b.is_error || false,
+        name: b.name || (call ? call.name : undefined), toolUseId: b.tool_use_id || b.id, isError: b.is_error || false,
         label: defaultLabel, text, chars: text.length, spans, raw: bt === 'text' || bt === 'thinking' ? undefined : b,
       });
     });
@@ -476,6 +536,15 @@ export async function analyzeRequest(rec, inventory, counter, prevRec, opts = {}
   if (!body) return null;
   const cls = classifyRequest(body);
   const { parts, adhocSources } = buildParts(body, inventory);
+  if (cls.kind === 'main') {
+    const agentSpan = parts.filter((p) => p.area === 'system').flatMap((p) => p.spans).find((s) => s.kind === 'agent' && s.sourceId);
+    const sys = systemText(body);
+    if (agentSpan) {
+      const src = inventory.sources.find((x) => x.id === agentSpan.sourceId);
+      cls.label = `subagent: ${src ? src.name : 'custom'}`;
+      cls.agent = src ? src.name : null;
+    } else if (!/interactive agent|Claude Code/i.test(sys)) cls.label = 'subagent (built-in)';
+  }
   const out = {};
   const counted = await countParts(parts, body, counter, { exact: opts.exact, out });
   const t = totals(parts, inventory, adhocSources);
@@ -484,6 +553,7 @@ export async function analyzeRequest(rec, inventory, counter, prevRec, opts = {}
   const analysis = {
     kind: cls.kind,
     label: cls.label,
+    agent: cls.agent || null,
     parts,
     adhocSources,
     totals: { ...t, bySource: t.bySource },
