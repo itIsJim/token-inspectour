@@ -30,24 +30,26 @@ Requires Node 18.17 or later and a working `claude` login.
 git clone https://github.com/itIsJim/token-inspectour.git
 cd token-inspectour
 npm install       # installs the TypeScript compiler and builds dist/
-npm link          # makes the `token-inspectour` command available
 ```
-
-Or skip the link and run `node bin/token-inspectour.js` from the checkout after `npm install`.
 
 ## Quick start
 
+From the checkout, point it at the project you want to inspect:
+
 ```sh
-token-inspectour ~/path/to/agent-project
+cd token-inspectour
+node bin/token-inspectour.js ~/path/to/agent-project
 ```
 
 This starts the proxy and the UI, opens the UI in your browser, and launches `claude` in that project through the proxy, all in the current terminal. Use Claude Code as normal. Each API call appears in the UI as it happens. When Claude Code exits, the inspector keeps serving the UI until you press Ctrl-C.
 
+If you would rather have a global command, run `npm link` once inside the checkout; then `token-inspectour ~/path/to/agent-project` works from anywhere. Everything below uses the `node bin/token-inspectour.js` form, which needs no link.
+
 Anything after `--` is passed to `claude`:
 
 ```sh
-token-inspectour ~/path/to/agent-project -- --continue
-token-inspectour ~/path/to/agent-project -- -p "summarize the repo"
+node bin/token-inspectour.js ~/path/to/agent-project -- --continue
+node bin/token-inspectour.js ~/path/to/agent-project -- -p "summarize the repo"
 ```
 
 ### Several agents at once
@@ -56,9 +58,9 @@ Run one inspector per agent, each in its own terminal:
 
 ```sh
 # terminal 1
-token-inspectour ~/projects/agent-a
+node bin/token-inspectour.js ~/projects/agent-a
 # terminal 2
-token-inspectour ~/projects/agent-b
+node bin/token-inspectour.js ~/projects/agent-b
 ```
 
 Each instance takes the next free proxy and UI port pair (4141/4142, then 4143/4144, and so on) and is served under its agent's name, so the tabs read `http://127.0.0.1:4142/agent-a/` and `http://127.0.0.1:4144/agent-b/`. Each UI lists only its own agent's sessions. The name defaults to the project folder; override it with `--name`.
@@ -68,7 +70,7 @@ Each instance takes the next free proxy and UI port pair (4141/4142, then 4143/4
 If you want to attach Claude Code yourself, run a headless pipeline through a fixed port, or funnel several agents through one proxy:
 
 ```sh
-token-inspectour --proxy-only -p 4141
+node bin/token-inspectour.js --proxy-only -p 4141
 ```
 
 Then, from any project, on one line:
