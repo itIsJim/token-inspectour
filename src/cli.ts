@@ -1,15 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startProxy } from './proxy.js';
 import { startUiServer } from './server.js';
+import type { ServerContext } from './server.js';
 import { Store } from './store.js';
 import { TokenCounter } from './tokens.js';
 import { scanInventory, watchRoots, KINDS } from './inventory.js';
 import { analyzeRequest, classifyRequest, detectProjectDir } from './analyze.js';
 import { readJsonSafe, exists, dataDir } from './util.js';
+import type { CaptureRecord, Inventory, RequestBody } from './types.js';
 
 const HELP = `token-inspectour — see what Claude Code actually sends to the model
 
@@ -44,8 +46,23 @@ Examples:
       ANTHROPIC_BASE_URL=http://127.0.0.1:4141/growth claude
 `;
 
-export function parseArgs(argv) {
-  const o = { projectDir: process.cwd(), name: null, port: null, ui: null, upstream: 'https://api.anthropic.com', count: true, persist: true, clear: false, open: true, run: [], proxyOnly: false, help: false };
+export interface Options {
+  projectDir: string;
+  name: string | null;
+  port: number | null;
+  ui: number | null;
+  upstream: string;
+  count: boolean;
+  persist: boolean;
+  clear: boolean;
+  open: boolean;
+  run: string[];
+  proxyOnly: boolean;
+  help: boolean;
+}
+
+export function parseArgs(argv: string[]): Options {
+  const o: Options = { projectDir: process.cwd(), name: null, port: null, ui: null, upstream: 'https://api.anthropic.com', count: true, persist: true, clear: false, open: true, run: [], proxyOnly: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') o.help = true;
@@ -69,15 +86,15 @@ export function parseArgs(argv) {
   return o;
 }
 
-export function slugify(name) {
+export function slugify(name: string | null | undefined): string {
   const s = String(name || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   return s && !/^(v1|api)$/.test(s) ? s : 'agent';
 }
 
 // Find a free port at or after `start` (each inspector instance gets its own pair).
-export function freePort(start, host = '127.0.0.1', taken = new Set()) {
+export function freePort(start: number, host = '127.0.0.1', taken = new Set<number>()): Promise<number> {
   return new Promise((resolve, reject) => {
-    const tryPort = (p) => {
+    const tryPort = (p: number): void => {
       if (p > 65000) return reject(new Error('no free port'));
       if (taken.has(p)) return tryPort(p + 1);
       const srv = net.createServer();
@@ -88,31 +105,29 @@ export function freePort(start, host = '127.0.0.1', taken = new Set()) {
   });
 }
 
-export async function main(argv) {
+export async function main(argv: string[]): Promise<void> {
   const o = parseArgs(argv);
   if (o.help) {
     process.stdout.write(HELP);
     return;
   }
   if (!fs.existsSync(o.projectDir)) throw new Error(`project dir not found: ${o.projectDir}`);
-  const pkg = readJsonSafe(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')) || {};
+  const pkg = readJsonSafe<{ version?: string }>(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json')) || {};
   const launching = !o.proxyOnly;
-  o.name = slugify(o.name || path.basename(o.projectDir));
-  if (o.port == null) o.port = await freePort(4141);
-  if (o.ui == null) o.ui = await freePort(o.port + 1, '127.0.0.1', new Set([o.port]));
+  const name = slugify(o.name || path.basename(o.projectDir));
+  const port = o.port ?? (await freePort(4141));
+  const uiPort = o.ui ?? (await freePort(port + 1, '127.0.0.1', new Set([port])));
 
   // In launch mode claude owns the terminal, so the inspector logs to a file instead of stderr.
-  const logLines = [];
-  const logListeners = new Set();
-  let logFile = null;
+  const logListeners = new Set<(line: string) => void>();
+  let logFile: string | null = null;
   if (launching && o.persist) {
     const ld = path.join(dataDir(), 'logs');
     fs.mkdirSync(ld, { recursive: true });
-    logFile = path.join(ld, `inspector-${o.port}.log`);
+    logFile = path.join(ld, `inspector-${port}.log`);
   }
-  const log = (line) => {
+  const log = (line: string): void => {
     const s = `[${new Date().toISOString().slice(11, 19)}] ${line}`;
-    logLines.push(s);
     if (launching) {
       if (logFile) fs.appendFileSync(logFile, s + '\n');
     } else process.stderr.write(s + '\n');
@@ -127,42 +142,42 @@ export async function main(argv) {
 
   // One inventory per project directory. Projects are discovered from the requests
   // themselves (environment reminder / CLAUDE.md paths), so a single proxy serves any agent.
-  const inventories = new Map();
-  const watched = new Set();
-  const invListeners = new Set();
-  let wt = null;
-  const rescan = () => {
+  const inventories = new Map<string, Inventory>();
+  const watched = new Set<string>();
+  const invListeners = new Set<(inv: Inventory) => void>();
+  let rescanTimer: NodeJS.Timeout | null = null;
+  const rescan = (): Inventory => {
     for (const dir of inventories.keys()) inventories.set(dir, scanInventory(dir));
     const inv = inventories.get(o.projectDir) || [...inventories.values()][0];
     log(`inventory rescanned: ${[...inventories.entries()].map(([d, i]) => `${path.basename(d)}=${i.sources.length}`).join(', ')}`);
     for (const l of invListeners) l(inv);
     return inv;
   };
-  const watchDir = (dir) => {
+  const watchDir = (dir: string): void => {
     for (const root of watchRoots(dir)) {
       if (watched.has(root)) continue;
       watched.add(root);
       try {
         fs.watch(root, { recursive: true }, () => {
-          clearTimeout(wt);
-          wt = setTimeout(rescan, 400);
+          if (rescanTimer) clearTimeout(rescanTimer);
+          rescanTimer = setTimeout(rescan, 400);
         });
       } catch {}
     }
   };
-  const getInventory = (dir) => {
-    dir = path.resolve(dir || o.projectDir);
-    let inv = inventories.get(dir);
+  const getInventory = (dir?: string): Inventory => {
+    const key = path.resolve(dir || o.projectDir);
+    let inv = inventories.get(key);
     if (!inv) {
-      inv = scanInventory(dir);
-      inventories.set(dir, inv);
-      watchDir(dir);
-      log(`inventory: ${inv.sources.length} sources in ${dir}`);
+      inv = scanInventory(key);
+      inventories.set(key, inv);
+      watchDir(key);
+      log(`inventory: ${inv.sources.length} sources in ${key}`);
     }
     return inv;
   };
   getInventory(o.projectDir);
-  const findSource = (id) => {
+  const findSource = (id: string) => {
     for (const inv of inventories.values()) {
       const s = inv.sources.find((x) => x.id === id);
       if (s) return s;
@@ -170,10 +185,10 @@ export async function main(argv) {
     return null;
   };
 
-  const prevMain = (rec) => {
+  const prevMain = (rec: CaptureRecord): CaptureRecord | null => {
     const s = store.sessions.get(rec.sessionId);
     if (!s) return null;
-    let prev = null;
+    let prev: CaptureRecord | null = null;
     for (const rid of s.requests) {
       if (rid === rec.id) break;
       const r = store.get(rid);
@@ -182,17 +197,17 @@ export async function main(argv) {
     return prev;
   };
 
-  const analyze = async (rec, opts = {}) => {
+  const analyze = async (rec: CaptureRecord, opts: { exact?: boolean; force?: boolean } = {}): Promise<void> => {
     if (!rec.body) return;
     if (rec._analyzing && !opts.force) return rec._analyzing;
     rec._analyzing = (async () => {
       try {
         const a = await analyzeRequest(rec, getInventory(rec.projectDir), counter, prevMain(rec), { exact: opts.exact !== false && counter.enabled });
         rec.analysis = a;
-        rec.kind = a.kind + (a.kind === 'side' ? `:${a.label}` : a.label && a.label !== 'agent turn' ? `:${a.label}` : '');
+        if (a) rec.kind = a.kind + (a.kind === 'side' ? `:${a.label}` : a.label && a.label !== 'agent turn' ? `:${a.label}` : '');
         store.update(rec, 'analysis');
       } catch (e) {
-        log(`analysis failed for ${rec.id}: ${e.stack || e}`);
+        log(`analysis failed for ${rec.id}: ${(e as Error).stack || e}`);
       } finally {
         rec._analyzing = null;
       }
@@ -200,23 +215,23 @@ export async function main(argv) {
     return rec._analyzing;
   };
 
-  const onCapture = (phase, cap) => {
+  const onCapture = (phase: 'request' | 'response', cap: CaptureRecord): void => {
     if (phase === 'request') {
       counter.setAuthFromHeaders(cap._auth);
-      if (!cap.agent) cap.agent = launching ? o.name : null;
+      if (!cap.agent) cap.agent = launching ? name : null;
       const detected = detectProjectDir(cap.body);
       const sess = store.sessions.get(cap.sessionId);
-      const ok = detected && exists(detected);
-      cap.projectDir = ok ? detected : sess && sess.projectDir ? sess.projectDir : o.projectDir;
+      const ok = !!detected && exists(detected);
+      cap.projectDir = ok ? detected! : sess && sess.projectDir ? sess.projectDir : o.projectDir;
       cap.projectDetected = ok;
-      if (ok && !inventories.has(path.resolve(detected))) log(`detected project: ${detected}`);
+      if (ok && !inventories.has(path.resolve(detected!))) log(`detected project: ${detected}`);
       if (ok && sess && sess.projectDir !== detected) {
         // the session was opened by a side call (no environment info); re-point it and its earlier calls
-        sess.projectDir = detected;
+        sess.projectDir = detected!;
         for (const rid of sess.requests) {
           const r = store.get(rid);
           if (r && !r.projectDetected && r.projectDir !== detected) {
-            r.projectDir = detected;
+            r.projectDir = detected!;
             store.save(r);
           }
         }
@@ -226,27 +241,25 @@ export async function main(argv) {
       cap.userPreview = preview(lastUserText(cap.body));
       store.addRequest(cap);
       log(`→ [${cap.agent || '-'}] ${cap.kind} ${cap.model || ''} tools=${cap.toolCount} msgs=${cap.messageCount} ${(cap.bytesIn / 1024).toFixed(0)}KB`);
-      analyze(cap);
+      void analyze(cap);
     } else {
       const u = cap.response && cap.response.usage;
-      cap.assistantPreview = preview((cap.response && cap.response.content || []).filter((b) => b.type === 'text').map((b) => b.text).join(' '));
+      cap.assistantPreview = preview(((cap.response && cap.response.content) || []).filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join(' '));
       store.update(cap, 'response');
       log(`← ${cap.status} ${cap.durationMs}ms ${u ? `in=${u.input_tokens} cacheR=${u.cache_read_input_tokens || 0} cacheW=${u.cache_creation_input_tokens || 0} out=${u.output_tokens}` : ''}`);
-      // refresh analysis (usage totals, diff) once counts are in
-      (async () => {
+      void (async () => {
         if (cap._analyzing) await cap._analyzing;
         await analyze(cap, { force: true });
       })();
     }
   };
 
-  const proxy = await startProxy({ port: o.port, upstream: o.upstream, onCapture, log });
+  const proxy = await startProxy({ port, upstream: o.upstream, onCapture, log });
   // A launched instance shows only its own agent's sessions (captures on disk are shared
   // between instances); a proxy-only hub shows everything it loaded or captured.
-  const sessions = () => store.listSessions().filter((s) => !launching || s.agent === o.name);
-  const ctx = {
-    name: o.name,
-    sessions,
+  const sessions = () => store.listSessions().filter((s) => !launching || s.agent === name);
+  const ctx: ServerContext = {
+    name,
     projectDir: o.projectDir,
     proxyUrl: proxy.url,
     upstream: o.upstream,
@@ -257,17 +270,18 @@ export async function main(argv) {
     inventory: (dir) => getInventory(dir),
     projects: () => [...inventories.keys()],
     findSource,
+    sessions,
     rescan,
     analyze,
-    onInventory: (l) => invListeners.add(l),
-    onLog: (l) => logListeners.add(l),
+    onInventory: (l) => { invListeners.add(l); },
+    onLog: (l) => { logListeners.add(l); },
   };
-  const ui = await startUiServer({ port: o.ui, ctx });
+  const ui = await startUiServer({ port: uiPort, ctx });
 
-  const baseUrl = `${proxy.url}/${o.name}`;
+  const baseUrl = `${proxy.url}/${name}`;
   process.stderr.write(`
   token-inspectour v${pkg.version}
-  agent     ${o.name}
+  agent     ${name}
   project   ${o.projectDir}
   proxy     ${baseUrl}  →  ${o.upstream}
   UI        ${ui.uiUrl}
@@ -293,8 +307,10 @@ ${launching ? `  log       ${logFile || '(not persisted)'}
       log(`claude exited (${code})`);
       process.stderr.write(`\n  claude exited (${code}). Inspector still serving ${ui.uiUrl} — press Ctrl-C to quit.\n`);
     });
-    const stop = () => {
-      try { child.kill('SIGTERM'); } catch {}
+    const stop = (): void => {
+      try {
+        child.kill('SIGTERM');
+      } catch {}
       process.exit(0);
     };
     process.on('SIGINT', stop);
@@ -302,24 +318,28 @@ ${launching ? `  log       ${logFile || '(not persisted)'}
   }
 }
 
-function lastUserText(body) {
+function lastUserText(body: RequestBody | null): string {
   if (!body || !Array.isArray(body.messages)) return '';
   for (let i = body.messages.length - 1; i >= 0; i--) {
     const m = body.messages[i];
     if (m.role !== 'user') continue;
     const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content || [];
-    const t = blocks.filter((b) => b.type === 'text').map((b) => b.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim()).filter(Boolean).join(' ');
+    const t = blocks
+      .filter((b) => b.type === 'text')
+      .map((b) => ((b as { text?: string }).text || '').replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim())
+      .filter(Boolean)
+      .join(' ');
     if (t) return t;
     if (blocks.some((b) => b.type === 'tool_result')) return '[tool results]';
   }
   return '';
 }
 
-function preview(s) {
+function preview(s: string): string {
   return (s || '').replace(/\s+/g, ' ').trim().slice(0, 140);
 }
 
-function openBrowser(url) {
+function openBrowser(url: string): void {
   const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
   try {
     spawn(cmd, [url], { stdio: 'ignore', detached: true }).unref();

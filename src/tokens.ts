@@ -5,9 +5,11 @@ import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import { dataDir, sha } from './util.js';
+import type { Headers } from './util.js';
+import type { ContentBlock, SystemBlock, ToolDef } from './types.js';
 
 // Rough local estimate (English prose / markdown / JSON mix). Labelled "≈" in the UI.
-export function estimateTokens(text) {
+export function estimateTokens(text: string): number {
   if (!text) return 0;
   const words = (text.match(/[A-Za-z0-9_]+|[^\sA-Za-z0-9_]/g) || []).length;
   return Math.max(1, Math.round(Math.max(words * 1.15, text.length / 4.1)));
@@ -18,94 +20,126 @@ const FORWARD_HEADERS = [
   'anthropic-dangerous-direct-browser-access',
 ];
 
+const DUMMY_TOOL: ToolDef = { name: 'x', description: '', input_schema: { type: 'object', properties: {} } };
+const DUMMY_TOOL_TOKENS = 12; // approximate size of DUMMY_TOOL itself, folded back into the marginal
+
+export interface CounterStats {
+  calls: number;
+  hits: number;
+  errors: number;
+  lastError: string | null;
+}
+
+interface Job {
+  body: unknown;
+  key: string;
+  resolve: (n: number | null) => void;
+}
+
+export interface TokenCounterOptions {
+  upstream?: string;
+  concurrency?: number;
+  persist?: boolean;
+  log?: (line: string) => void;
+}
+
 export class TokenCounter {
-  constructor({ upstream, concurrency = 2, persist = true, log = () => {} } = {}) {
+  readonly upstream: URL;
+  readonly concurrency: number;
+  private log: (line: string) => void;
+  auth: Headers | null = null; // headers captured from the latest real request
+  readonly cache = new Map<string, number>();
+  private cachePath: string | null;
+  readonly queue: Job[] = [];
+  active = 0;
+  private inflight = new Map<string, Promise<number | null>>();
+  enabled = true;
+  stats: CounterStats = { calls: 0, hits: 0, errors: 0, lastError: null };
+  private saveTimer: NodeJS.Timeout | null = null;
+
+  constructor({ upstream, concurrency = 2, persist = true, log = () => {} }: TokenCounterOptions = {}) {
     this.upstream = new URL(upstream || 'https://api.anthropic.com');
     this.concurrency = concurrency;
     this.log = log;
-    this.auth = null; // headers captured from the latest real request
-    this.cache = new Map();
     this.cachePath = persist ? path.join(dataDir(), 'token-cache.json') : null;
-    this.queue = [];
-    this.active = 0;
-    this.inflight = new Map();
-    this.enabled = true;
-    this.stats = { calls: 0, hits: 0, errors: 0, lastError: null };
-    this.#loadCache();
+    this.loadCache();
   }
 
-  #loadCache() {
+  private loadCache(): void {
     if (!this.cachePath) return;
     try {
-      const j = JSON.parse(fs.readFileSync(this.cachePath, 'utf8'));
+      const j = JSON.parse(fs.readFileSync(this.cachePath, 'utf8')) as Record<string, number>;
       for (const [k, v] of Object.entries(j)) this.cache.set(k, v);
     } catch {}
   }
 
-  #saveCache() {
+  private saveCache(): void {
     if (!this.cachePath) return;
-    clearTimeout(this._saveT);
-    this._saveT = setTimeout(() => {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
       try {
-        fs.writeFileSync(this.cachePath, JSON.stringify(Object.fromEntries(this.cache)));
+        fs.writeFileSync(this.cachePath!, JSON.stringify(Object.fromEntries(this.cache)));
       } catch {}
     }, 500);
   }
 
-  setAuthFromHeaders(headers) {
-    const h = {};
+  setAuthFromHeaders(headers: Headers | undefined): void {
+    if (!headers) return;
+    const h: Headers = {};
     for (const k of FORWARD_HEADERS) if (headers[k]) h[k] = headers[k];
     if (h.authorization || h['x-api-key']) this.auth = h;
   }
 
-  get ready() {
+  get ready(): boolean {
     return this.enabled && !!this.auth;
   }
 
   // Count a full request body (system/tools/messages/model). Returns input_tokens or null.
-  async count(body) {
+  async count(body: unknown): Promise<number | null> {
     const key = sha(JSON.stringify(body));
-    if (this.cache.has(key)) {
+    const cached = this.cache.get(key);
+    if (cached !== undefined) {
       this.stats.hits++;
-      return this.cache.get(key);
+      return cached;
     }
     if (!this.ready) return null;
-    if (this.inflight.has(key)) return this.inflight.get(key);
-    const p = new Promise((resolve) => {
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
+    const p = new Promise<number | null>((resolve) => {
       this.queue.push({ body, key, resolve });
-      this.#pump();
+      this.pump();
     });
     this.inflight.set(key, p);
     p.finally(() => this.inflight.delete(key));
     return p;
   }
 
-  #pump() {
+  private pump(): void {
     while (this.active < this.concurrency && this.queue.length) {
-      const job = this.queue.shift();
+      const job = this.queue.shift()!;
       this.active++;
-      this.#run(job)
+      this.run(job)
         .then((n) => {
           if (n != null) {
             this.cache.set(job.key, n);
-            this.#saveCache();
+            this.saveCache();
           }
           job.resolve(n);
         })
         .finally(() => {
           this.active--;
-          this.#pump();
+          this.pump();
         });
     }
   }
 
-  async #run(job, attempt = 0) {
+  private async run(job: Job, attempt = 0): Promise<number | null> {
     const payload = JSON.stringify(job.body);
-    const res = await this.#post('/v1/messages/count_tokens?beta=true', payload).catch((e) => ({ status: 0, body: String(e) }));
+    const res = await this.post('/v1/messages/count_tokens?beta=true', payload).catch((e: Error) => ({ status: 0, body: String(e) }));
     this.stats.calls++;
     if (res.status === 200) {
       try {
-        return JSON.parse(res.body).input_tokens;
+        return JSON.parse(res.body).input_tokens as number;
       } catch {
         return null;
       }
@@ -113,7 +147,7 @@ export class TokenCounter {
     if ((res.status === 429 || res.status >= 500 || res.status === 0) && attempt < 4) {
       const wait = Math.min(8000, 500 * 2 ** attempt);
       await new Promise((r) => setTimeout(r, wait));
-      return this.#run(job, attempt + 1);
+      return this.run(job, attempt + 1);
     }
     this.stats.errors++;
     this.stats.lastError = `${res.status} ${String(res.body).slice(0, 300)}`;
@@ -122,7 +156,7 @@ export class TokenCounter {
     return null;
   }
 
-  #post(pathname, payload) {
+  private post(pathname: string, payload: string): Promise<{ status: number; body: string }> {
     return new Promise((resolve, reject) => {
       const mod = this.upstream.protocol === 'http:' ? http : https;
       const req = mod.request(
@@ -132,7 +166,7 @@ export class TokenCounter {
           method: 'POST',
           path: pathname,
           headers: {
-            ...this.auth,
+            ...(this.auth as Record<string, string>),
             host: this.upstream.host,
             'content-type': 'application/json',
             'content-length': Buffer.byteLength(payload),
@@ -140,9 +174,9 @@ export class TokenCounter {
           },
         },
         (r) => {
-          const out = [];
-          r.on('data', (c) => out.push(c));
-          r.on('end', () => resolve({ status: r.statusCode, body: Buffer.concat(out).toString('utf8') }));
+          const out: Buffer[] = [];
+          r.on('data', (c: Buffer) => out.push(c));
+          r.on('end', () => resolve({ status: r.statusCode || 0, body: Buffer.concat(out).toString('utf8') }));
         },
       );
       req.on('error', reject);
@@ -151,21 +185,18 @@ export class TokenCounter {
   }
 
   // --- helpers used by the analyzer ---------------------------------------
-  async baseline(model) {
+  baseline(model: string): Promise<number | null> {
     return this.count({ model, messages: [{ role: 'user', content: '.' }] });
   }
 
-  async countText(model, text) {
+  async countText(model: string, text: string): Promise<number | null> {
     if (!text) return 0;
-    const [b, t] = await Promise.all([
-      this.baseline(model),
-      this.count({ model, messages: [{ role: 'user', content: text }] }),
-    ]);
+    const [b, t] = await Promise.all([this.baseline(model), this.count({ model, messages: [{ role: 'user', content: text }] })]);
     if (b == null || t == null) return null;
     return Math.max(0, t - b + 1);
   }
 
-  async countSystemBlocks(model, blocks) {
+  async countSystemBlocks(model: string, blocks: SystemBlock[]): Promise<number | null> {
     const [b, t] = await Promise.all([
       this.baseline(model),
       this.count({ model, system: blocks.map(stripCache), messages: [{ role: 'user', content: '.' }] }),
@@ -175,7 +206,7 @@ export class TokenCounter {
   }
 
   // Tokens for a tool list including the tool-use framing the API adds once per request.
-  async countTools(model, tools) {
+  async countTools(model: string, tools: ToolDef[]): Promise<number | null> {
     const [b, t] = await Promise.all([
       this.baseline(model),
       this.count({ model, tools: tools.map(stripCache), messages: [{ role: 'user', content: '.' }] }),
@@ -185,18 +216,18 @@ export class TokenCounter {
   }
 
   // Framing cost: what a request with one (near-empty) tool costs beyond no tools at all.
-  async toolFraming(model) {
+  toolFraming(model: string): Promise<number | null> {
     return this.countTools(model, [DUMMY_TOOL]);
   }
 
   // Marginal cost of a single tool definition (framing removed).
-  async countTool(model, tool) {
+  async countTool(model: string, tool: ToolDef): Promise<number | null> {
     const [f, t] = await Promise.all([this.toolFraming(model), this.countTools(model, [tool])]);
     if (f == null || t == null) return null;
     return Math.max(0, t - f + DUMMY_TOOL_TOKENS);
   }
 
-  async countMessageBlock(model, role, block) {
+  async countMessageBlock(model: string, role: 'user' | 'assistant', block: ContentBlock): Promise<number | null> {
     // A lone assistant message is not a valid conversation start; wrap in a user turn.
     const msgs = role === 'assistant'
       ? [{ role: 'user', content: '.' }, { role: 'assistant', content: [stripCache(block)] }]
@@ -210,11 +241,11 @@ export class TokenCounter {
   }
 }
 
-const DUMMY_TOOL = { name: 'x', description: '', input_schema: { type: 'object', properties: {} } };
-const DUMMY_TOOL_TOKENS = 12; // approximate size of DUMMY_TOOL itself, folded back into the marginal
+/** The public surface the analyzer needs; lets tests substitute a fake counter. */
+export type Counter = Pick<TokenCounter, 'ready' | 'countSystemBlocks' | 'countTools' | 'toolFraming' | 'countTool' | 'countText' | 'countMessageBlock'>;
 
-export function stripCache(o) {
+export function stripCache<T extends object>(o: T): Omit<T, 'cache_control'> {
   if (!o || typeof o !== 'object') return o;
-  const { cache_control, ...rest } = o;
+  const { cache_control: _cc, ...rest } = o as T & { cache_control?: unknown };
   return rest;
 }

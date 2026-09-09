@@ -6,7 +6,7 @@ import path from 'node:path';
 import { scanInventory, sanitizeMcp, extractHooks } from '../src/inventory.js';
 import { splitFrontmatter, projectKey } from '../src/util.js';
 
-function tmpProject() {
+function tmpProject(): { root: string; proj: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ti-'));
   const proj = path.join(root, 'parent', 'proj');
   fs.mkdirSync(path.join(proj, '.claude', 'skills', 'deploy'), { recursive: true });
@@ -34,7 +34,7 @@ test('scans the CLAUDE.md chain, rules, skills, namespaced commands, agents, hoo
   process.env.CLAUDE_CONFIG_DIR = path.join(home, '.claude');
   try {
     const inv = scanInventory(proj);
-    const by = (kind) => inv.sources.filter((s) => s.kind === kind);
+    const by = (kind: string) => inv.sources.filter((s) => s.kind === kind);
     assert.deepEqual(by('claude-md').map((s) => s.scope), ['parent', 'project']);
     assert.equal(by('rules').length, 1);
     const sk = by('skill')[0];
@@ -44,10 +44,10 @@ test('scans the CLAUDE.md chain, rules, skills, namespaced commands, agents, hoo
     assert.equal(by('command')[0].name, 'ops:restart');
     assert.equal(by('agent')[0].name, 'researcher');
     const st = by('settings')[0];
-    assert.equal(st.hooks[0].event, 'PreToolUse');
-    assert.equal(st.hooks[0].matcher, 'Bash');
+    assert.equal(st.hooks?.[0].event, 'PreToolUse');
+    assert.equal(st.hooks?.[0].matcher, 'Bash');
     const mcp = by('mcp')[0];
-    assert.equal(mcp.servers[0].sanitized, 'my_db');
+    assert.equal(mcp.servers?.[0].sanitized, 'my_db');
   } finally {
     process.env.HOME = prevHome;
     if (prevCfg === undefined) delete process.env.CLAUDE_CONFIG_DIR;

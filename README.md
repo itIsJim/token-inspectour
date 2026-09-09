@@ -16,7 +16,7 @@ token-inspectour is a local proxy with a browser UI. It sits between Claude Code
                                       └──────────────────┘
 ```
 
-No dependencies. One HTML file, a few hundred lines of Node.
+Written in TypeScript with no runtime dependencies. One HTML page, a few hundred lines of Node.
 
 ## Why
 
@@ -29,10 +29,11 @@ Requires Node 18.17 or later and a working `claude` login.
 ```sh
 git clone https://github.com/<you>/token-inspectour.git
 cd token-inspectour
+npm install       # installs the TypeScript compiler and builds dist/
 npm link          # makes the `token-inspectour` command available
 ```
 
-Or skip the link and run `node bin/token-inspectour.js` from the checkout.
+Or skip the link and run `node bin/token-inspectour.js` from the checkout after `npm install`.
 
 ## Quick start
 
@@ -113,9 +114,9 @@ Subagent turns made through the Agent tool are captured like any other call and 
 
 ## How attribution works
 
-The scanner (`src/inventory.js`) walks from the filesystem root down to the project and picks up every `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, and `.claude/rules/*.md` on the way, then the project's and user's skills, commands (namespaced `a:b` like Claude Code does), agents, settings (hooks, permissions, enabled plugins), MCP config (`.mcp.json` and `~/.claude.json`), auto-memory for the project, and installed plugins.
+The scanner (`src/inventory.ts`) walks from the filesystem root down to the project and picks up every `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, and `.claude/rules/*.md` on the way, then the project's and user's skills, commands (namespaced `a:b` like Claude Code does), agents, settings (hooks, permissions, enabled plugins), MCP config (`.mcp.json` and `~/.claude.json`), auto-memory for the project, and installed plugins.
 
-The analyzer (`src/analyze.js`) then matches request text against that inventory:
+The analyzer (`src/analyze.ts`) then matches request text against that inventory:
 
 | match | how |
 |---|---|
@@ -155,17 +156,19 @@ Captures are written to `~/.token-inspectour/captures/<session>/`, one JSON file
 
 ## Compatibility and limitations
 
-- Tested with Claude Code 2.1.x on macOS with both OAuth and API-key sessions. The attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, some spans will fall back to `harness` or `reminder` until the regexes in `src/analyze.js` are updated.
+- Tested with Claude Code 2.1.x on macOS with both OAuth and API-key sessions. The attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, some spans will fall back to `harness` or `reminder` until the regexes in `src/analyze.ts` are updated.
 - Claude Code must honour `ANTHROPIC_BASE_URL`, which it does in every mode we tried. Third-party gateways that Claude Code is already pointed at can be chained with `--upstream`.
-- The UI is a single dependency-free HTML file; it has been exercised against real sessions but not across many browsers.
+- The UI is a single dependency-free page (`ui/index.html` + compiled `app.js`); it has been exercised against real sessions but not across many browsers.
 
 ## Development
 
 ```sh
-npm test        # node --test
+npm run build       # tsc → dist/ (backend, tests) and dist/ui/app.js (browser)
+npm test            # build, then node --test dist/test/
+npm run typecheck   # strict type check without emitting
 ```
 
-The code is plain ES modules on `node:http`, no build step. `src/proxy.js` captures, `src/sse.js` assembles streams, `src/inventory.js` scans, `src/analyze.js` attributes and counts, `src/tokens.js` talks to count_tokens, `src/store.js` persists, `src/server.js` serves the UI and JSON API, `src/cli.js` wires it together.
+The code is strict TypeScript compiled to ES modules on `node:http`; the only dev dependency is the TypeScript compiler. `src/types.ts` holds the shared data model (requests, sources, parts, spans, analyses, summaries) that the backend and the browser UI both compile against. `src/proxy.ts` captures, `src/sse.ts` assembles streams, `src/inventory.ts` scans, `src/analyze.ts` attributes and counts, `src/tokens.ts` talks to count_tokens, `src/store.ts` persists, `src/server.ts` serves the UI and JSON API, `src/cli.ts` wires it together. The UI is `ui/index.html` plus `ui/app.ts`.
 
 Issues and pull requests are welcome. If you hit a request shape that is not attributed correctly, an anonymised capture (delete the message text, keep the structure) makes it easy to fix.
 

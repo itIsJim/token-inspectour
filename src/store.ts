@@ -3,21 +3,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { dataDir, readJsonSafe, listDir, nowIso } from './util.js';
+import type { CaptureRecord, RequestSummary, Session, SessionSummary } from './types.js';
+
+export type StoreEvent = 'session' | 'request' | 'response' | 'analysis' | 'update' | 'cleared';
+
+interface SessionMeta {
+  startedAt?: string;
+  projectDir?: string | null;
+  projectDetected?: boolean;
+  agent?: string | null;
+  label?: string | null;
+}
 
 export class Store extends EventEmitter {
-  constructor({ persist = true } = {}) {
+  readonly persist: boolean;
+  readonly sessions = new Map<string, Session>();
+  readonly requests = new Map<string, CaptureRecord>();
+  seq = 0;
+  readonly dir: string | null;
+
+  constructor({ persist = true }: { persist?: boolean } = {}) {
     super();
     this.persist = persist;
-    this.sessions = new Map(); // sessionId -> { id, startedAt, requests: [] }
-    this.requests = new Map(); // requestId -> request record
-    this.seq = 0;
     this.dir = persist ? path.join(dataDir(), 'captures') : null;
     if (this.dir) fs.mkdirSync(this.dir, { recursive: true });
   }
 
-  load() {
+  load(): void {
     if (!this.dir) return;
-    const files = [];
+    const files: string[] = [];
     for (const s of listDir(this.dir)) {
       if (!s.isDirectory()) continue;
       for (const f of listDir(path.join(this.dir, s.name))) {
@@ -26,12 +40,12 @@ export class Store extends EventEmitter {
     }
     files.sort();
     for (const f of files) {
-      const rec = readJsonSafe(f);
-      if (rec && rec.id) this.#add(rec, false);
+      const rec = readJsonSafe<CaptureRecord>(f);
+      if (rec && rec.id) this.add(rec, false);
     }
   }
 
-  session(id, meta = {}) {
+  session(id: string, meta: SessionMeta = {}): Session {
     let s = this.sessions.get(id);
     if (!s) {
       s = { id, startedAt: meta.startedAt || nowIso(), projectDir: meta.projectDir || null, agent: meta.agent || null, requests: [], label: meta.label || null };
@@ -43,7 +57,7 @@ export class Store extends EventEmitter {
     return s;
   }
 
-  #add(rec, emit = true) {
+  private add(rec: CaptureRecord, emit = true): CaptureRecord {
     const s = this.session(rec.sessionId, { startedAt: rec.startedAt, projectDir: rec.projectDir, projectDetected: rec.projectDetected, agent: rec.agent });
     if (!this.requests.has(rec.id)) {
       s.requests.push(rec.id);
@@ -54,32 +68,32 @@ export class Store extends EventEmitter {
     return rec;
   }
 
-  addRequest(rec) {
+  addRequest(rec: CaptureRecord): CaptureRecord {
     rec.seq = ++this.seq;
-    return this.#add(rec, true);
+    return this.add(rec, true);
   }
 
-  update(rec, event = 'update') {
+  update(rec: CaptureRecord, event: StoreEvent = 'update'): void {
     this.emit(event, rec);
     this.save(rec);
   }
 
-  save(rec) {
+  save(rec: CaptureRecord): void {
     if (!this.dir) return;
     const d = path.join(this.dir, rec.sessionId.replace(/[^A-Za-z0-9_-]/g, '_'));
     fs.mkdirSync(d, { recursive: true });
     const p = path.join(d, `${String(rec.seq).padStart(5, '0')}-${rec.id}.json`);
-    const { _auth, ...safe } = rec;
+    const { _auth: _a, _analyzing: _b, ...safe } = rec;
     const tmp = p + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(safe));
     fs.renameSync(tmp, p);
   }
 
-  get(id) {
+  get(id: string): CaptureRecord | null {
     return this.requests.get(id) || null;
   }
 
-  listSessions() {
+  listSessions(): SessionSummary[] {
     return [...this.sessions.values()]
       .map((s) => ({
         id: s.id,
@@ -87,22 +101,24 @@ export class Store extends EventEmitter {
         projectDir: s.projectDir,
         agent: s.agent,
         label: s.label,
-        requests: s.requests.map((rid) => summarize(this.requests.get(rid))).filter(Boolean),
+        requests: s.requests.map((rid) => summarize(this.requests.get(rid))).filter((x): x is RequestSummary => x !== null),
       }))
       .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
   }
 
-  clear() {
+  clear(): void {
     this.sessions.clear();
     this.requests.clear();
     this.seq = 0;
-    if (this.dir) fs.rmSync(this.dir, { recursive: true, force: true });
-    if (this.dir) fs.mkdirSync(this.dir, { recursive: true });
+    if (this.dir) {
+      fs.rmSync(this.dir, { recursive: true, force: true });
+      fs.mkdirSync(this.dir, { recursive: true });
+    }
     this.emit('cleared');
   }
 }
 
-export function summarize(rec) {
+export function summarize(rec: CaptureRecord | undefined | null): RequestSummary | null {
   if (!rec) return null;
   const u = (rec.response && rec.response.usage) || {};
   return {

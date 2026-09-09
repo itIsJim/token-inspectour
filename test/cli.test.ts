@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import net from 'node:net';
-import { parseArgs, freePort } from '../src/cli.js';
+import { parseArgs, freePort, slugify } from '../src/cli.js';
+import { splitAgentPrefix } from '../src/proxy.js';
 
 test('launching claude is the default; -- and --run pass args through; --proxy-only disables', () => {
   const d = parseArgs([]);
@@ -24,8 +25,8 @@ test('launching claude is the default; -- and --run pass args through; --proxy-o
 
 test('freePort skips ports that are in use', async () => {
   const srv = net.createServer();
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  const busy = srv.address().port;
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const busy = (srv.address() as net.AddressInfo).port;
   const p = await freePort(busy);
   assert.notEqual(p, busy);
   assert.ok(p > busy);
@@ -33,9 +34,6 @@ test('freePort skips ports that are in use', async () => {
   assert.ok(q > busy + 1);
   srv.close();
 });
-
-import { slugify } from '../src/cli.js';
-import { splitAgentPrefix } from '../src/proxy.js';
 
 test('agent names become route slugs; the proxy strips the agent prefix', () => {
   assert.equal(slugify('My Agent Project'), 'my-agent-project');

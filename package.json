@@ -8,14 +8,17 @@
   },
   "files": [
     "bin",
-    "src",
+    "dist/src",
     "ui",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json",
+    "prepare": "npm run build",
     "start": "node bin/token-inspectour.js",
-    "test": "node --test test/"
+    "test": "npm run build && node --test dist/test/",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.ui.json --noEmit"
   },
   "engines": {
     "node": ">=18.17"
@@ -31,5 +34,9 @@
     "mcp"
   ],
   "author": "Jim",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3"
+  }
 }
