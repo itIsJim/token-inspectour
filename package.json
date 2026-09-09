@@ -1,0 +1,18 @@
+{
+  "name": "token-inspectour",
+  "version": "0.1.0",
+  "description": "See what Claude Code actually sends to the model: a local proxy + UI that maps every span of the request back to the CLAUDE.md, skill, command, agent, hook, MCP and harness source that produced it, with exact token counts per step.",
+  "type": "module",
+  "bin": {
+    "token-inspectour": "bin/token-inspectour.js"
+  },
+  "scripts": {
+    "start": "node bin/token-inspectour.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "license": "MIT",
+  "private": true
+}
