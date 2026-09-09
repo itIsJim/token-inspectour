@@ -108,7 +108,7 @@ tr.unused td{color:var(--muted)}
 <body>
 <div id="app">
   <header>
-    <h1>token-inspectour</h1>
+    <h1>token-inspectour <span class="pill" id="h-name" title="agent name (route prefix)">…</span></h1>
     <span class="kv">project <b id="h-project">…</b></span>
     <span class="kv">proxy <span class="cmd" id="h-cmd">…</span></span>
     <span class="grow"></span>
@@ -125,6 +125,8 @@ tr.unused td{color:var(--muted)}
 </div>
 <div class="tip" id="tip"></div>
 <script>
+const BASE = '__INSPECTOUR_BASE__';
+const NAME = '__INSPECTOUR_NAME__';
 const $ = (s, el=document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (n) => n == null ? '–' : n.toLocaleString();
@@ -135,7 +137,7 @@ const S = {
   cache:new Map(), hlSource:null, sessionAnalyses:new Map(),
 };
 
-async function api(p, opt){ const r = await fetch(p, opt); if(!r.ok) throw new Error(p+' '+r.status); return r.json(); }
+async function api(p, opt){ const r = await fetch(BASE + p, opt); if(!r.ok) throw new Error(p+' '+r.status); return r.json(); }
 function kindColor(k){ return (S.kinds[k]||{}).color || '#94a3b8'; }
 function kindLabel(k){ return (S.kinds[k]||{}).label || k; }
 function srcById(id){ return recSources().find(s=>s.id===id) || (S.rec && S.rec.adhocSources||[]).find(s=>s.id===id); }
@@ -145,7 +147,8 @@ const short = (p) => (p||'').replace(/^\/Users\/[^/]+/, '~');
 async function loadState(){
   S.state = await api('/api/state');
   S.kinds = S.state.kinds; S.sources = S.state.inventory.sources; S.sessions = S.state.sessions;
-  document.title = `${(S.state.projectDir||'').split('/').pop()} · token-inspectour :${location.port}`;
+  document.title = `${NAME} · token-inspectour :${location.port}`;
+  $('#h-name').textContent = NAME;
   $('#h-project').textContent = short(S.state.projectDir) + (S.state.projects.length>1 ? ` (+${S.state.projects.length-1} detected)` : '');
   $('#h-project').title = 'default project; each session\'s project is detected from its requests:\n' + S.state.projects.map(short).join('\n');
   const cmd = `ANTHROPIC_BASE_URL=${S.state.proxyUrl} claude`;
@@ -171,7 +174,7 @@ function renderLeft(){
     const last = main[main.length-1];
     const tot = last && last.usage ? (last.usage.input||0)+(last.usage.cacheRead||0)+(last.usage.cacheWrite||0) : null;
     return `<div class="sess ${open?'sel':''}" data-id="${s.id}">
-      <div class="hd" data-sess="${s.id}" title="${esc(s.projectDir||'')}"><span>${open?'▾':'▸'}</span><b>${esc((s.projectDir||'').split('/').pop()||s.id.slice(0,8))}</b><span class="muted small">${new Date(s.startedAt).toLocaleString()}</span><span class="grow"></span><span class="small mono">${s.requests.length} calls${tot?` · ctx ${fmt(tot)}`:''}</span></div>
+      <div class="hd" data-sess="${s.id}" title="${esc(s.projectDir||'')}"><span>${open?'▾':'▸'}</span><b>${esc(s.agent||(s.projectDir||'').split('/').pop()||s.id.slice(0,8))}</b>${s.agent&&s.projectDir&&s.agent!==s.projectDir.split('/').pop()?`<span class="muted small">${esc(s.projectDir.split('/').pop())}</span>`:''}<span class="muted small">${new Date(s.startedAt).toLocaleString()}</span><span class="grow"></span><span class="small mono">${s.requests.length} calls${tot?` · ctx ${fmt(tot)}`:''}</span></div>
       ${open ? s.requests.map(r => reqRow(r)).join('') : ''}
     </div>`;
   }).join('');
@@ -394,7 +397,7 @@ async function openSource(id, matchedText){
 
 // live updates
 function live(){
-  const es = new EventSource('/events');
+  const es = new EventSource(BASE + '/events');
   const refresh = async (data) => {
     S.sessions = await api('/api/sessions');
     const st = await api('/api/state'); S.state = st; S.sources = st.inventory.sources; renderHeaderPills();

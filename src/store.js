@@ -34,16 +34,17 @@ export class Store extends EventEmitter {
   session(id, meta = {}) {
     let s = this.sessions.get(id);
     if (!s) {
-      s = { id, startedAt: meta.startedAt || nowIso(), projectDir: meta.projectDir || null, requests: [], label: meta.label || null };
+      s = { id, startedAt: meta.startedAt || nowIso(), projectDir: meta.projectDir || null, agent: meta.agent || null, requests: [], label: meta.label || null };
       this.sessions.set(id, s);
       this.emit('session', s);
     }
     if (meta.projectDir && (!s.projectDir || meta.projectDetected)) s.projectDir = meta.projectDir;
+    if (meta.agent && !s.agent) s.agent = meta.agent;
     return s;
   }
 
   #add(rec, emit = true) {
-    const s = this.session(rec.sessionId, { startedAt: rec.startedAt, projectDir: rec.projectDir, projectDetected: rec.projectDetected });
+    const s = this.session(rec.sessionId, { startedAt: rec.startedAt, projectDir: rec.projectDir, projectDetected: rec.projectDetected, agent: rec.agent });
     if (!this.requests.has(rec.id)) {
       s.requests.push(rec.id);
       this.requests.set(rec.id, rec);
@@ -84,6 +85,7 @@ export class Store extends EventEmitter {
         id: s.id,
         startedAt: s.startedAt,
         projectDir: s.projectDir,
+        agent: s.agent,
         label: s.label,
         requests: s.requests.map((rid) => summarize(this.requests.get(rid))).filter(Boolean),
       }))
@@ -107,6 +109,8 @@ export function summarize(rec) {
     id: rec.id,
     seq: rec.seq,
     sessionId: rec.sessionId,
+    agent: rec.agent || null,
+    projectDir: rec.projectDir || null,
     startedAt: rec.startedAt,
     endedAt: rec.endedAt,
     durationMs: rec.durationMs,

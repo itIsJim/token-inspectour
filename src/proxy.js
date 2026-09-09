@@ -7,6 +7,15 @@ import zlib from 'node:zlib';
 import { SseAssembler, fromJsonBody } from './sse.js';
 import { redactHeaders, shortId, nowIso } from './util.js';
 
+// Claude Code is pointed at http://host:port/<agent> so the first path segment names the
+// agent; it is stripped before forwarding and recorded on every capture for identification.
+const RESERVED = new Set(['v1', 'api']);
+export function splitAgentPrefix(url) {
+  const m = /^\/([A-Za-z0-9][A-Za-z0-9._-]*)(\/.*)$/.exec(url || '');
+  if (m && !RESERVED.has(m[1])) return { agent: m[1], path: m[2] };
+  return { agent: null, path: url };
+}
+
 export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log = () => {} }) {
   const up = new URL(upstream);
   const mod = up.protocol === 'http:' ? http : https;
@@ -16,8 +25,9 @@ export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log 
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
       const body = Buffer.concat(chunks);
-      const isMessages = req.method === 'POST' && /^\/v1\/messages(\?|$)/.test(req.url);
-      const capture = isMessages ? beginCapture(req, body) : null;
+      const { agent, path: upPath } = splitAgentPrefix(req.url);
+      const isMessages = req.method === 'POST' && /^\/v1\/messages(\?|$)/.test(upPath);
+      const capture = isMessages ? beginCapture(req, body, agent, upPath) : null;
       if (capture) onCapture('request', capture);
 
       const headers = { ...req.headers, host: up.host, 'accept-encoding': 'identity' };
@@ -26,7 +36,7 @@ export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log 
 
       const t0 = Date.now();
       const upReq = mod.request(
-        { host: up.hostname, port: up.port || undefined, method: req.method, path: req.url, headers },
+        { host: up.hostname, port: up.port || undefined, method: req.method, path: upPath, headers },
         (upRes) => {
           const resHeaders = { ...upRes.headers };
           delete resHeaders['content-encoding'];
@@ -98,7 +108,7 @@ export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log 
   });
 }
 
-function beginCapture(req, body) {
+function beginCapture(req, body, agent, upPath) {
   let parsed = null;
   try {
     parsed = JSON.parse(body.toString('utf8'));
@@ -111,7 +121,8 @@ function beginCapture(req, body) {
     id: shortId(),
     startedAt: nowIso(),
     method: req.method,
-    path: req.url,
+    path: upPath,
+    agent: agent || null,
     headers: redactHeaders(req.headers),
     _auth: req.headers, // raw, in-memory only (never persisted)
     bytesIn: body.length,

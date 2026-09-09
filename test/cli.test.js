@@ -33,3 +33,16 @@ test('freePort skips ports that are in use', async () => {
   assert.ok(q > busy + 1);
   srv.close();
 });
+
+import { slugify } from '../src/cli.js';
+import { splitAgentPrefix } from '../src/proxy.js';
+
+test('agent names become route slugs; the proxy strips the agent prefix', () => {
+  assert.equal(slugify('My Agent Project'), 'my-agent-project');
+  assert.equal(slugify('v1'), 'agent');
+  assert.equal(slugify(''), 'agent');
+  assert.deepEqual(splitAgentPrefix('/growth/v1/messages?beta=true'), { agent: 'growth', path: '/v1/messages?beta=true' });
+  assert.deepEqual(splitAgentPrefix('/v1/messages?beta=true'), { agent: null, path: '/v1/messages?beta=true' });
+  assert.deepEqual(splitAgentPrefix('/api/hello'), { agent: null, path: '/api/hello' });
+  assert.deepEqual(splitAgentPrefix('/sales.bot/api/hello'), { agent: 'sales.bot', path: '/api/hello' });
+});

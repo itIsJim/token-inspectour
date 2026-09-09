@@ -22,8 +22,11 @@ Usage: token-inspectour [projectDir] [options] [-- claude args…]
   projectDir            Project to launch Claude Code in (default: cwd). Sessions' projects are
                         also detected from the requests themselves.
   -- <args…>            Everything after -- is passed to claude (e.g. -- -p "summarize the repo")
-  --proxy-only          Do not launch claude; just run the proxy + UI (then point any
-                        Claude Code at it with ANTHROPIC_BASE_URL)
+  --name <slug>         Agent name used in the routes (default: the project folder name).
+                        Proxy: http://127.0.0.1:<port>/<name>   UI: http://127.0.0.1:<ui>/<name>/
+  --proxy-only          Do not launch claude; just run the proxy + UI. Attach any Claude Code
+                        with ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/<agent-name>; the path
+                        segment labels that agent's sessions.
   -p, --port <n>        Proxy port (default: first free port from 4141)
   -u, --ui <n>          UI port    (default: the port after the proxy port)
   --upstream <url>      Real API base URL (default https://api.anthropic.com)
@@ -37,17 +40,19 @@ Examples:
   token-inspectour ~/agents/growth                 # terminal 1: growth agent + its UI
   token-inspectour ~/agents/sales                  # terminal 2: sales agent + a second UI
   token-inspectour ~/agents/growth -- -p "status"  # one headless prompt through the proxy
-  token-inspectour --proxy-only -p 4141            # plain proxy; attach any claude yourself
+  token-inspectour --proxy-only -p 4141            # plain proxy; attach agents manually:
+      ANTHROPIC_BASE_URL=http://127.0.0.1:4141/growth claude
 `;
 
 export function parseArgs(argv) {
-  const o = { projectDir: process.cwd(), port: null, ui: null, upstream: 'https://api.anthropic.com', count: true, persist: true, clear: false, open: true, run: [], proxyOnly: false, help: false };
+  const o = { projectDir: process.cwd(), name: null, port: null, ui: null, upstream: 'https://api.anthropic.com', count: true, persist: true, clear: false, open: true, run: [], proxyOnly: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') o.help = true;
     else if (a === '-p' || a === '--port') o.port = Number(argv[++i]);
     else if (a === '-u' || a === '--ui') o.ui = Number(argv[++i]);
     else if (a === '--upstream') o.upstream = argv[++i];
+    else if (a === '--name') o.name = argv[++i];
     else if (a === '--no-count') o.count = false;
     else if (a === '--no-persist') o.persist = false;
     else if (a === '--clear') o.clear = true;
@@ -62,6 +67,11 @@ export function parseArgs(argv) {
     else o.projectDir = path.resolve(a);
   }
   return o;
+}
+
+export function slugify(name) {
+  const s = String(name || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+  return s && !/^(v1|api)$/.test(s) ? s : 'agent';
 }
 
 // Find a free port at or after `start` (each inspector instance gets its own pair).
@@ -87,6 +97,7 @@ export async function main(argv) {
   if (!fs.existsSync(o.projectDir)) throw new Error(`project dir not found: ${o.projectDir}`);
   const pkg = readJsonSafe(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')) || {};
   const launching = !o.proxyOnly;
+  o.name = slugify(o.name || path.basename(o.projectDir));
   if (o.port == null) o.port = await freePort(4141);
   if (o.ui == null) o.ui = await freePort(o.port + 1, '127.0.0.1', new Set([o.port]));
 
@@ -192,6 +203,7 @@ export async function main(argv) {
   const onCapture = (phase, cap) => {
     if (phase === 'request') {
       counter.setAuthFromHeaders(cap._auth);
+      if (!cap.agent) cap.agent = launching ? o.name : null;
       const detected = detectProjectDir(cap.body);
       const sess = store.sessions.get(cap.sessionId);
       const ok = detected && exists(detected);
@@ -213,7 +225,7 @@ export async function main(argv) {
       cap.kind = cls.kind + (cls.kind === 'side' ? `:${cls.label}` : '');
       cap.userPreview = preview(lastUserText(cap.body));
       store.addRequest(cap);
-      log(`→ ${cap.kind} ${cap.model || ''} tools=${cap.toolCount} msgs=${cap.messageCount} ${(cap.bytesIn / 1024).toFixed(0)}KB`);
+      log(`→ [${cap.agent || '-'}] ${cap.kind} ${cap.model || ''} tools=${cap.toolCount} msgs=${cap.messageCount} ${(cap.bytesIn / 1024).toFixed(0)}KB`);
       analyze(cap);
     } else {
       const u = cap.response && cap.response.usage;
@@ -229,7 +241,12 @@ export async function main(argv) {
   };
 
   const proxy = await startProxy({ port: o.port, upstream: o.upstream, onCapture, log });
+  // A launched instance shows only its own agent's sessions (captures on disk are shared
+  // between instances); a proxy-only hub shows everything it loaded or captured.
+  const sessions = () => store.listSessions().filter((s) => !launching || s.agent === o.name);
   const ctx = {
+    name: o.name,
+    sessions,
     projectDir: o.projectDir,
     proxyUrl: proxy.url,
     upstream: o.upstream,
@@ -247,31 +264,34 @@ export async function main(argv) {
   };
   const ui = await startUiServer({ port: o.ui, ctx });
 
+  const baseUrl = `${proxy.url}/${o.name}`;
   process.stderr.write(`
   token-inspectour v${pkg.version}
+  agent     ${o.name}
   project   ${o.projectDir}
-  proxy     ${proxy.url}  →  ${o.upstream}
-  UI        ${ui.url}
+  proxy     ${baseUrl}  →  ${o.upstream}
+  UI        ${ui.uiUrl}
   counting  ${o.count ? 'exact via count_tokens (after the first captured request)' : 'estimates only'}
 ${launching ? `  log       ${logFile || '(not persisted)'}
 
   Launching claude here through the proxy. Open another terminal and run
   token-inspectour again for a second agent; it will take the next free ports.
 ` : `
-  Point any Claude Code at the proxy:
-    cd ${o.projectDir} && ANTHROPIC_BASE_URL=${proxy.url} claude
+  Attach agents manually; the path segment names the agent in the UI:
+    cd ${o.projectDir} && ANTHROPIC_BASE_URL=${baseUrl} claude
+    cd /other/agent && ANTHROPIC_BASE_URL=${proxy.url}/other-agent claude
 `}
 `);
-  if (o.open) openBrowser(ui.url);
+  if (o.open) openBrowser(ui.uiUrl);
   if (launching) {
     log(`launching claude ${o.run.join(' ')} in ${o.projectDir}`);
-    const child = spawn('claude', o.run, { cwd: o.projectDir, stdio: 'inherit', env: { ...process.env, ANTHROPIC_BASE_URL: proxy.url } });
+    const child = spawn('claude', o.run, { cwd: o.projectDir, stdio: 'inherit', env: { ...process.env, ANTHROPIC_BASE_URL: baseUrl } });
     child.on('error', (e) => {
       process.stderr.write(`could not launch claude: ${e.message}\n`);
     });
     child.on('exit', (code) => {
       log(`claude exited (${code})`);
-      process.stderr.write(`\n  claude exited (${code}). Inspector still serving ${ui.url} — press Ctrl-C to quit.\n`);
+      process.stderr.write(`\n  claude exited (${code}). Inspector still serving ${ui.uiUrl} — press Ctrl-C to quit.\n`);
     });
     const stop = () => {
       try { child.kill('SIGTERM'); } catch {}

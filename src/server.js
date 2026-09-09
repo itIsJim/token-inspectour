@@ -29,12 +29,20 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
     res.end(body);
   };
 
+  const base = `/${ctx.name}`;
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
-    const p = url.pathname;
+    let p = url.pathname;
     try {
+      // Everything is served under /<agent-name>/ so tabs and logs identify the instance.
+      if (p === '/' || p === base) {
+        res.writeHead(302, { location: `${base}/` });
+        return res.end();
+      }
+      if (p.startsWith(base + '/')) p = p.slice(base.length);
+      else if (!p.startsWith('/api/') && p !== '/events') return json(res, 404, { error: `not found; this instance is served at ${base}/` });
       if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
-        const html = fs.readFileSync(path.join(UI_DIR, 'index.html'));
+        const html = fs.readFileSync(path.join(UI_DIR, 'index.html'), 'utf8').replace('__INSPECTOUR_BASE__', base).replace('__INSPECTOUR_NAME__', ctx.name);
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         return res.end(html);
       }
@@ -51,6 +59,8 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
       }
       if (p === '/api/state') {
         return json(res, 200, {
+          name: ctx.name,
+          base,
           projectDir: ctx.projectDir,
           proxyUrl: ctx.proxyUrl,
           upstream: ctx.upstream,
@@ -58,11 +68,11 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
           inventory: { scannedAt: ctx.inventory().scannedAt, sources: ctx.inventory().sources.map((s) => publicSource(s)) },
           projects: ctx.projects(),
           kinds: ctx.kinds,
-          sessions: ctx.store.listSessions(),
+          sessions: ctx.sessions(),
           version: ctx.version,
         });
       }
-      if (p === '/api/sessions') return json(res, 200, ctx.store.listSessions());
+      if (p === '/api/sessions') return json(res, 200, ctx.sessions());
       let m;
       if ((m = /^\/api\/requests\/([A-Za-z0-9]+)$/.exec(p))) {
         const rec = ctx.store.get(m[1]);
@@ -110,7 +120,7 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }) {
   });
   return new Promise((resolve, reject) => {
     server.on('error', reject);
-    server.listen(port, host, () => resolve({ server, url: `http://${host}:${server.address().port}` }));
+    server.listen(port, host, () => resolve({ server, url: `http://${host}:${server.address().port}`, uiUrl: `http://${host}:${server.address().port}${base}/` }));
   });
 }
 
