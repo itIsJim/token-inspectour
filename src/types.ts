@@ -426,3 +426,37 @@ export interface SessionSummary {
 /** Analysis with part text stripped, for list/summary transport. */
 export type SlimPart = Omit<Part, 'text' | 'raw'>;
 export type SlimAnalysis = Omit<Analysis, 'parts'> & { parts: SlimPart[] };
+
+// ---- Flow graph ---------------------------------------------------------------------
+
+export type GraphNodeKind = SourceKind | 'session' | 'turn' | 'side' | 'group' | 'area' | 'request';
+
+export interface GraphNodeData {
+  id: string;
+  label: string;
+  kind: GraphNodeKind;
+  sub?: string;
+  parent?: string;
+  tokens?: number;
+  tokensOut?: number;
+  ref?: { type: 'request' | 'source' | 'call' | 'area'; id: string; requestId?: string };
+  detail?: Record<string, unknown>;
+}
+export interface GraphEdgeData {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  tokens?: number;
+  kind: 'next' | 'side' | 'call' | 'result' | 'spawn' | 'feeds';
+}
+export interface GraphNode { data: GraphNodeData }
+export interface GraphEdge { data: GraphEdgeData }
+export interface GraphData {
+  mode: 'flow' | 'context';
+  sessionId: string;
+  requestId?: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  stats: Record<string, number>;
+}

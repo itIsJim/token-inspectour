@@ -7,6 +7,7 @@ import { publicSource } from './inventory.js';
 import type { KindInfo } from './inventory.js';
 import { slimAnalysis } from './analyze.js';
 import { summarize } from './store.js';
+import { buildFlowGraph, buildContextGraph } from './graph.js';
 import type { Store } from './store.js';
 import type { TokenCounter } from './tokens.js';
 import type { CaptureRecord, Inventory, RequestBody, Session, SessionSummary, Source, SourceKind } from './types.js';
@@ -82,6 +83,8 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }: { port: number;
         return file(res, UI_DIR, 'index.html', 'text/html; charset=utf-8', (s) => s.replace('__INSPECTOUR_BASE__', base).replace('__INSPECTOUR_NAME__', ctx.name));
       }
       if (req.method === 'GET' && p === '/app.js') return file(res, UI_BUILD, 'app.js', 'text/javascript; charset=utf-8');
+      let vm: RegExpExecArray | null;
+      if (req.method === 'GET' && (vm = /^\/vendor\/([A-Za-z0-9._-]+\.js)$/.exec(p))) return file(res, path.join(UI_DIR, 'vendor'), vm[1], 'text/javascript; charset=utf-8');
       if (p === '/events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
         res.write(': hi\n\n');
@@ -111,6 +114,21 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }: { port: number;
       }
       if (p === '/api/sessions') return json(res, 200, ctx.sessions());
       let m: RegExpExecArray | null;
+      if ((m = /^\/api\/sessions\/([A-Za-z0-9_-]+)\/graph$/.exec(p))) {
+        const sess = ctx.store.sessions.get(m[1]);
+        if (!sess) return json(res, 404, { error: 'not found' });
+        const recs = sess.requests.map((id) => ctx.store.get(id)).filter((r): r is CaptureRecord => !!r);
+        const inv = ctx.inventory(sess.projectDir || undefined);
+        const servers = new Set<string>();
+        for (const s of inv.sources) for (const v of s.servers || []) servers.add(v.sanitized);
+        return json(res, 200, buildFlowGraph(sess.id, recs, servers));
+      }
+      if ((m = /^\/api\/requests\/([A-Za-z0-9]+)\/graph$/.exec(p))) {
+        const rec = ctx.store.get(m[1]);
+        if (!rec) return json(res, 404, { error: 'not found' });
+        const inv = ctx.inventory(rec.projectDir);
+        return json(res, 200, buildContextGraph(rec, [...inv.sources, ...(rec.analysis?.adhocSources || [])]));
+      }
       if ((m = /^\/api\/requests\/([A-Za-z0-9]+)$/.exec(p))) {
         const rec = ctx.store.get(m[1]);
         if (!rec) return json(res, 404, { error: 'not found' });
