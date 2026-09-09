@@ -1,92 +1,115 @@
 # token-inspectour
 
-See what Claude Code actually sends to the model.
+**See what Claude Code actually sends to the model.**
 
-`token-inspectour` is a local proxy plus a browser UI. You start it once and run Claude Code through it from any project. Every API call the binary makes is captured, and every span of the request is mapped back to the file that produced it: the `CLAUDE.md` chain, rules, skills, slash commands, agents, hooks, MCP servers, auto-memory, plugins, and the built-in harness. Each part carries an exact token count, so you can see where the context window goes, how it changes from step to step, and which of your project files are actually reaching the model.
+token-inspectour is a local proxy with a browser UI. It sits between Claude Code and the Anthropic API, captures every request, and maps each span of that request back to the file that produced it: your `CLAUDE.md` chain, rules, skills, slash commands, subagents, hooks, MCP servers, auto-memory, plugins, and the built-in harness. Every part carries an exact token count, so you can see where the context window goes, how it changes from step to step, and which of your project files are really reaching the model.
 
 ```
 ┌─────────────┐  ANTHROPIC_BASE_URL   ┌──────────────────┐  forwards   ┌──────────────────┐
 │ claude code │ ───────────────────▶  │ token-inspectour │ ──────────▶ │ api.anthropic.com│
-│  (binary)   │ ◀─────────────────── │   proxy :4141    │ ◀────────── │                  │
+│             │ ◀─────────────────── │  proxy :4141     │ ◀────────── │                  │
 └─────────────┘   streamed response   └────────┬─────────┘             └──────────────────┘
                                                │ captures request + response
                                                ▼
                                       ┌──────────────────┐
-                                      │   UI  :4142      │  anatomy · sources · step diff · response · raw
+                                      │  UI :4142/<agent>│  anatomy · sources · step diff · response · raw
                                       └──────────────────┘
 ```
 
-## Quick start
+No dependencies. One HTML file, a few hundred lines of Node.
 
-Requires Node 18.17+ and a working `claude` login. No dependencies to install.
+## Why
+
+Claude Code assembles a large prompt on your behalf: a harness system prompt, seventy-odd tool definitions, every `CLAUDE.md` up the directory tree, skill and agent listings, memory files, reminders, and then your conversation. When a session feels expensive or an instruction gets ignored, it is hard to tell what the model was actually shown. This tool answers that with numbers, per file, per turn.
+
+## Install
+
+Requires Node 18.17 or later and a working `claude` login.
 
 ```sh
-node bin/token-inspectour.js ~/path/to/agent-project
+git clone https://github.com/<you>/token-inspectour.git
+cd token-inspectour
+npm link          # makes the `token-inspectour` command available
 ```
 
-That starts the proxy and the UI, opens the UI in your browser, and launches `claude` in that project through the proxy, all in the current terminal. Use Claude Code as normal. Each API call shows up in the UI as it happens. When Claude Code exits, the inspector keeps serving the UI until you press Ctrl-C.
+Or skip the link and run `node bin/token-inspectour.js` from the checkout.
+
+## Quick start
+
+```sh
+token-inspectour ~/path/to/agent-project
+```
+
+This starts the proxy and the UI, opens the UI in your browser, and launches `claude` in that project through the proxy, all in the current terminal. Use Claude Code as normal. Each API call appears in the UI as it happens. When Claude Code exits, the inspector keeps serving the UI until you press Ctrl-C.
 
 Anything after `--` is passed to `claude`:
 
 ```sh
-node bin/token-inspectour.js ~/path/to/agent-project -- -p "summarize the repo"
-node bin/token-inspectour.js ~/path/to/agent-project -- --continue
+token-inspectour ~/path/to/agent-project -- --continue
+token-inspectour ~/path/to/agent-project -- -p "summarize the repo"
 ```
 
-### Inspecting several agents at once
+### Several agents at once
 
 Run one inspector per agent, each in its own terminal:
 
 ```sh
 # terminal 1
-node bin/token-inspectour.js ~/agents/growth
+token-inspectour ~/agents/growth
 # terminal 2
-node bin/token-inspectour.js ~/agents/sales
+token-inspectour ~/agents/sales
 ```
 
-Every instance picks the next free proxy and UI ports (4141/4142, then 4143/4144, and so on) and opens its own browser tab, titled with the project name and port. Each UI shows the sessions its own proxy captured.
+Each instance takes the next free proxy and UI port pair (4141/4142, then 4143/4144, and so on) and is served under its agent's name, so the tabs read `http://127.0.0.1:4142/growth/` and `http://127.0.0.1:4144/sales/`. Each UI lists only its own agent's sessions. The name defaults to the project folder; override it with `--name`.
 
-### Proxy-only mode
+### Proxy-only mode (advanced)
 
-If you would rather attach Claude Code yourself, or run a headless pipeline through a fixed port:
+If you want to attach Claude Code yourself, run a headless pipeline through a fixed port, or funnel several agents through one proxy:
 
 ```sh
-node bin/token-inspectour.js --proxy-only -p 4141
-# any project, any terminal, on one line:
-cd ~/path/to/agent-project && ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude
+token-inspectour --proxy-only -p 4141
 ```
 
-### Works with any agent
+Then, from any project, on one line:
 
-The proxy is project-agnostic. Each session's project directory is read from the request itself (the harness tells the model its working directory; the `CLAUDE.md` paths are the fallback), and an inventory is scanned per detected project on first sight. A project with no `.claude/` of its own still gets a meaningful inventory: the parent `CLAUDE.md` chain, user-level skills, agents, settings, memory, and plugins.
+```sh
+cd ~/agents/growth && ANTHROPIC_BASE_URL=http://127.0.0.1:4141/growth claude
+cd ~/agents/sales  && ANTHROPIC_BASE_URL=http://127.0.0.1:4141/sales  claude
+```
 
-Subagent turns (the Agent tool) are captured like any other call and labelled with the agent definition whose body appears in their system prompt. Skill invocations and file reads are attributed to the skill or file they came from.
+The path segment after the port names the agent. The proxy strips it before forwarding and records it on every capture, so the sessions of both agents show up labelled in the hub's UI.
 
 ## What you see
 
 **Anatomy.** The request split into its three areas, with a stacked bar of tokens by source kind.
 
-- *System prompt*: the billing header, the Agent SDK preamble, and the harness prompt (with its cache breakpoint).
+- *System prompt*: the billing header, the Agent SDK preamble, and the harness prompt with its cache breakpoint.
 - *Tools*: every tool definition, grouped into built-in tools and MCP servers, plus the tool-use framing the API adds once per request.
-- *Messages*: every content block, with the `<system-reminder>` blocks opened up. Inside them, each `Contents of <file>` section is attributed to that file, and the skill, agent, and MCP-instruction listings are attributed line by line.
+- *Messages*: every content block, with `<system-reminder>` blocks opened up. Inside them, each `Contents of <file>` section is attributed to that file, and the skill, agent, and MCP-instruction listings are attributed line by line. Tool results are attributed to the file a `Read` fetched or the skill a `Skill` call invoked.
 
-Expand any part to read its text with each span tinted by kind. Hover a span for its token count. Click a span to open the source file on the right with the matched region highlighted.
+Expand any part to read its text with each span tinted by kind. Hover a span for its token count. Click a span to open the source file beside it with the matched region highlighted.
 
-**Sources.** The full inventory the scanner found for the project: which files are sent, how many tokens each costs in this request, how much of the file arrived verbatim (coverage), and which steps of the session include it. Unused files are listed too, so you can spot a skill that never gets pulled in.
+**Sources.** The full inventory found for the session's project: which files are sent, how many tokens each costs in this request, how much of the file arrived verbatim, and which steps of the session include it. Unused files are listed too, so a skill that never gets pulled in stands out.
 
-**Diff.** The change from the previous agent turn in the same session: added, removed, and changed parts with token deltas, next to the server's own cache-read / cache-write / uncached numbers.
+**Diff.** The change from the previous agent turn: added, removed, and changed parts with token deltas, beside the server's own cache-read, cache-write, and uncached numbers.
 
 **Response.** The assembled streamed reply (text, thinking, tool calls), usage, stop reason, and timing.
 
-**Raw.** Headers and bodies as captured.
+**Raw.** Headers and bodies as captured, with credentials redacted.
 
 ## Token counts
 
-Counts are exact, not estimated. After the first captured request, the inspector reuses that session's auth headers to call `/v1/messages/count_tokens` for each part. Results are cached by content hash in `~/.token-inspectour/token-cache.json`, so a second turn only counts what changed. Parts that could not be counted fall back to a local estimate and are marked with `≈`.
+Counts are exact, not estimated. After the first captured request, the inspector reuses that session's own auth headers to call `/v1/messages/count_tokens` for each part. Results are cached by content hash, so a second turn only counts what changed. Parts that could not be counted fall back to a local estimate and are marked with `≈`.
 
-Per-tool numbers are marginal costs. The API adds a fixed wrapper around any tool list; that wrapper is shown as its own part ("tool-use framing") so that the sum of parts matches the server's reported prompt total. On real runs the two agree to within about 0.05%.
+Per-tool numbers are marginal costs. The API adds a fixed wrapper around any tool list; that wrapper is shown as its own part so the sum of parts matches the server's reported prompt total. On real runs the two agree to within about 0.05%. The remaining difference is shown as "unattributed" rather than hidden.
 
-Use `--no-count` to disable the count_tokens calls entirely.
+`--no-count` disables the count_tokens calls entirely.
+
+## Works with any agent
+
+The proxy is project-agnostic. Each session's project directory is read from the request itself (the harness tells the model its working directory, and the `CLAUDE.md` paths are the fallback). An inventory is scanned per detected project on first sight and rescanned when its config changes. A project with no `.claude/` of its own still gets a meaningful inventory: the parent `CLAUDE.md` chain, user-level skills, agents, settings, memory, and plugins.
+
+Subagent turns made through the Agent tool are captured like any other call and labelled with the agent definition whose body appears in their system prompt.
 
 ## How attribution works
 
@@ -97,15 +120,14 @@ The analyzer (`src/analyze.js`) then matches request text against that inventory
 | match | how |
 |---|---|
 | `contents-of` | `Contents of <path> (…):` sections inside `<system-reminder>` blocks |
-| `exact` | a file's body or full content appearing verbatim (skill bodies after `Skill(...)`, injected files) |
+| `exact` | a file's body or full content appearing verbatim |
 | `partial` | a file located by its first 120 chars and extended by longest common prefix, reported with coverage |
 | `listing` | one line per skill, command, or agent in the harness listings; one section per server under `# MCP Server Instructions` |
-| tool name | `mcp__<server>__<tool>` resolved to the MCP source; `claude_ai_*` servers are claude.ai connectors |
-| `tool-read` | a `Read` tool result, attributed to the file (or the skill whose folder contains it) |
+| `tool-read` | a `Read` tool result, attributed to the file, or to the skill whose folder contains it |
 | `skill-invoke` | a `Skill` tool result, attributed to the invoked skill or command |
-| subagent | an agent definition body found in a request's system prompt labels that call `subagent: <name>` |
+| tool name | `mcp__<server>__<tool>` resolved to the MCP source; `claude_ai_*` servers are claude.ai connectors |
 
-Anything left over inside a reminder is `reminder`, inside the system prompt is `harness`, in a user turn is `user`, and so on. Side calls that Claude Code makes (session-title generation, compaction) are captured and labelled separately from agent turns.
+Anything left over inside a reminder is `reminder`, inside the system prompt is `harness`, in a user turn is `user`, and so on. Side calls Claude Code makes on its own (session-title generation, compaction) are captured and labelled separately from agent turns.
 
 ## CLI
 
@@ -114,21 +136,39 @@ token-inspectour [projectDir] [options] [-- claude args…]
 
   projectDir            Project to launch Claude Code in (default: cwd)
   -- <args…>            Passed to claude
+  --name <slug>         Agent name used in the routes (default: the project folder name)
   --proxy-only          Do not launch claude; just run the proxy + UI
   -p, --port <n>        Proxy port (default: first free port from 4141)
   -u, --ui <n>          UI port    (default: the port after the proxy port)
   --upstream <url>      Real API base URL (default https://api.anthropic.com)
   --no-open             Do not open the UI in the browser
   --no-count            Estimates only; never call count_tokens
-  --no-persist          Do not write captures to ~/.token-inspectour
+  --no-persist          Do not write captures to disk
   --clear               Delete previously captured sessions on start
 ```
 
-Captures live in `~/.token-inspectour/captures/<session>/`, one JSON per call, with auth headers redacted. In launch mode the inspector's own log goes to `~/.token-inspectour/logs/inspector-<port>.log` so it never draws over Claude Code's screen. Set `TOKEN_INSPECTOUR_HOME` to move that directory.
+## Privacy and data
 
-## Notes
+Everything stays on your machine. The proxy listens on `127.0.0.1` only and forwards to the API you already use.
 
-- Works with OAuth (`claude login`) sessions and API keys alike; the proxy forwards whatever headers Claude Code sends.
-- The inventory rescans automatically when files under `.claude/`, `CLAUDE.md`, `.mcp.json`, or the user's `~/.claude` change.
-- The UI is a single dependency-free HTML file (`ui/index.html`); the server is plain `node:http`.
-- Tests: `npm test`.
+Captures are written to `~/.token-inspectour/captures/<session>/`, one JSON file per call. They contain your prompts, your files as the model saw them, and the model's replies, so treat that directory like a transcript. Authorization headers are redacted before anything is written; the live auth headers are held in memory only, to make count_tokens calls on your behalf. In launch mode the inspector's own log goes to `~/.token-inspectour/logs/`. Set `TOKEN_INSPECTOUR_HOME` to move all of it, or `--no-persist` to keep nothing.
+
+## Compatibility and limitations
+
+- Tested with Claude Code 2.1.x on macOS with both OAuth and API-key sessions. The attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, some spans will fall back to `harness` or `reminder` until the regexes in `src/analyze.js` are updated.
+- Claude Code must honour `ANTHROPIC_BASE_URL`, which it does in every mode we tried. Third-party gateways that Claude Code is already pointed at can be chained with `--upstream`.
+- The UI is a single dependency-free HTML file; it has been exercised against real sessions but not across many browsers.
+
+## Development
+
+```sh
+npm test        # node --test
+```
+
+The code is plain ES modules on `node:http`, no build step. `src/proxy.js` captures, `src/sse.js` assembles streams, `src/inventory.js` scans, `src/analyze.js` attributes and counts, `src/tokens.js` talks to count_tokens, `src/store.js` persists, `src/server.js` serves the UI and JSON API, `src/cli.js` wires it together.
+
+Issues and pull requests are welcome. If you hit a request shape that is not attributed correctly, an anonymised capture (delete the message text, keep the structure) makes it easy to fix.
+
+## License
+
+MIT
