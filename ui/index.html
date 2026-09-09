@@ -145,6 +145,7 @@ const short = (p) => (p||'').replace(/^\/Users\/[^/]+/, '~');
 async function loadState(){
   S.state = await api('/api/state');
   S.kinds = S.state.kinds; S.sources = S.state.inventory.sources; S.sessions = S.state.sessions;
+  document.title = `${(S.state.projectDir||'').split('/').pop()} · token-inspectour :${location.port}`;
   $('#h-project').textContent = short(S.state.projectDir) + (S.state.projects.length>1 ? ` (+${S.state.projects.length-1} detected)` : '');
   $('#h-project').title = 'default project; each session\'s project is detected from its requests:\n' + S.state.projects.map(short).join('\n');
   const cmd = `ANTHROPIC_BASE_URL=${S.state.proxyUrl} claude`;

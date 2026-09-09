@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { startProxy } from './proxy.js';
 import { startUiServer } from './server.js';
@@ -8,30 +9,39 @@ import { Store } from './store.js';
 import { TokenCounter } from './tokens.js';
 import { scanInventory, watchRoots, KINDS } from './inventory.js';
 import { analyzeRequest, classifyRequest, detectProjectDir } from './analyze.js';
-import { readJsonSafe, exists } from './util.js';
+import { readJsonSafe, exists, dataDir } from './util.js';
 
 const HELP = `token-inspectour — see what Claude Code actually sends to the model
 
-Usage: token-inspectour [projectDir] [options]
+Usage: token-inspectour [projectDir] [options] [-- claude args…]
 
-  projectDir            Default project folder (default: cwd). Each session's real project is
-                        detected from the request itself, so any agent can run through one proxy.
-  -p, --port <n>        Proxy port Claude Code connects to        (default 4141)
-  -u, --ui <n>          UI port                                   (default 4142)
-  --upstream <url>      Real API base URL                         (default https://api.anthropic.com)
-  --run [args…]         Launch \`claude\` in projectDir through the proxy (args after --run go to claude)
+  By default this launches \`claude\` in projectDir through the inspector's proxy and opens
+  the UI. Run it once per agent, each in its own terminal: every instance picks its own free
+  proxy + UI ports, so each agent gets its own inspector window.
+
+  projectDir            Project to launch Claude Code in (default: cwd). Sessions' projects are
+                        also detected from the requests themselves.
+  -- <args…>            Everything after -- is passed to claude (e.g. -- -p "summarize the repo")
+  --proxy-only          Do not launch claude; just run the proxy + UI (then point any
+                        Claude Code at it with ANTHROPIC_BASE_URL)
+  -p, --port <n>        Proxy port (default: first free port from 4141)
+  -u, --ui <n>          UI port    (default: the port after the proxy port)
+  --upstream <url>      Real API base URL (default https://api.anthropic.com)
+  --no-open             Do not open the UI in the browser
   --no-count            Skip exact token counting (estimates only; no count_tokens calls)
   --no-persist          Do not write captures to ~/.token-inspectour
   --clear               Delete previously captured sessions on start
-  --open                Open the UI in the browser
   -h, --help            Show this help
 
-Then, in another terminal:
-  ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude
+Examples:
+  token-inspectour ~/agents/growth                 # terminal 1: growth agent + its UI
+  token-inspectour ~/agents/sales                  # terminal 2: sales agent + a second UI
+  token-inspectour ~/agents/growth -- -p "status"  # one headless prompt through the proxy
+  token-inspectour --proxy-only -p 4141            # plain proxy; attach any claude yourself
 `;
 
 export function parseArgs(argv) {
-  const o = { projectDir: process.cwd(), port: 4141, ui: 4142, upstream: 'https://api.anthropic.com', count: true, persist: true, clear: false, open: false, run: null, help: false };
+  const o = { projectDir: process.cwd(), port: null, ui: null, upstream: 'https://api.anthropic.com', count: true, persist: true, clear: false, open: true, run: [], proxyOnly: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '-h' || a === '--help') o.help = true;
@@ -42,13 +52,30 @@ export function parseArgs(argv) {
     else if (a === '--no-persist') o.persist = false;
     else if (a === '--clear') o.clear = true;
     else if (a === '--open') o.open = true;
-    else if (a === '--run') {
+    else if (a === '--no-open') o.open = false;
+    else if (a === '--proxy-only' || a === '--no-run') o.proxyOnly = true;
+    else if (a === '--run' || a === '--') {
+      // legacy --run and the -- separator both mean: the rest goes to claude
       o.run = argv.slice(i + 1);
       break;
     } else if (a.startsWith('-')) throw new Error(`unknown option ${a}`);
     else o.projectDir = path.resolve(a);
   }
   return o;
+}
+
+// Find a free port at or after `start` (each inspector instance gets its own pair).
+export function freePort(start, host = '127.0.0.1', taken = new Set()) {
+  return new Promise((resolve, reject) => {
+    const tryPort = (p) => {
+      if (p > 65000) return reject(new Error('no free port'));
+      if (taken.has(p)) return tryPort(p + 1);
+      const srv = net.createServer();
+      srv.once('error', () => tryPort(p + 1));
+      srv.listen(p, host, () => srv.close(() => resolve(p)));
+    };
+    tryPort(start);
+  });
 }
 
 export async function main(argv) {
@@ -59,12 +86,25 @@ export async function main(argv) {
   }
   if (!fs.existsSync(o.projectDir)) throw new Error(`project dir not found: ${o.projectDir}`);
   const pkg = readJsonSafe(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')) || {};
+  const launching = !o.proxyOnly;
+  if (o.port == null) o.port = await freePort(4141);
+  if (o.ui == null) o.ui = await freePort(o.port + 1, '127.0.0.1', new Set([o.port]));
+
+  // In launch mode claude owns the terminal, so the inspector logs to a file instead of stderr.
   const logLines = [];
   const logListeners = new Set();
+  let logFile = null;
+  if (launching && o.persist) {
+    const ld = path.join(dataDir(), 'logs');
+    fs.mkdirSync(ld, { recursive: true });
+    logFile = path.join(ld, `inspector-${o.port}.log`);
+  }
   const log = (line) => {
     const s = `[${new Date().toISOString().slice(11, 19)}] ${line}`;
     logLines.push(s);
-    process.stderr.write(s + '\n');
+    if (launching) {
+      if (logFile) fs.appendFileSync(logFile, s + '\n');
+    } else process.stderr.write(s + '\n');
     for (const l of logListeners) l(s);
   };
 
@@ -209,21 +249,36 @@ export async function main(argv) {
 
   process.stderr.write(`
   token-inspectour v${pkg.version}
-  project   ${o.projectDir}  (default; each session's project is detected from its requests)
+  project   ${o.projectDir}
   proxy     ${proxy.url}  →  ${o.upstream}
   UI        ${ui.url}
   counting  ${o.count ? 'exact via count_tokens (after the first captured request)' : 'estimates only'}
+${launching ? `  log       ${logFile || '(not persisted)'}
 
-  Run Claude Code through the proxy:
-    cd ${o.projectDir}
-    ANTHROPIC_BASE_URL=${proxy.url} claude
-
+  Launching claude here through the proxy. Open another terminal and run
+  token-inspectour again for a second agent; it will take the next free ports.
+` : `
+  Point any Claude Code at the proxy:
+    cd ${o.projectDir} && ANTHROPIC_BASE_URL=${proxy.url} claude
+`}
 `);
   if (o.open) openBrowser(ui.url);
-  if (o.run) {
-    log(`launching claude ${o.run.join(' ')}`);
+  if (launching) {
+    log(`launching claude ${o.run.join(' ')} in ${o.projectDir}`);
     const child = spawn('claude', o.run, { cwd: o.projectDir, stdio: 'inherit', env: { ...process.env, ANTHROPIC_BASE_URL: proxy.url } });
-    child.on('exit', (code) => log(`claude exited (${code}); inspector still running — Ctrl-C to quit`));
+    child.on('error', (e) => {
+      process.stderr.write(`could not launch claude: ${e.message}\n`);
+    });
+    child.on('exit', (code) => {
+      log(`claude exited (${code})`);
+      process.stderr.write(`\n  claude exited (${code}). Inspector still serving ${ui.url} — press Ctrl-C to quit.\n`);
+    });
+    const stop = () => {
+      try { child.kill('SIGTERM'); } catch {}
+      process.exit(0);
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
   }
 }
 

@@ -21,25 +21,44 @@ See what Claude Code actually sends to the model.
 Requires Node 18.17+ and a working `claude` login. No dependencies to install.
 
 ```sh
-# 1. start the inspector (any directory; keep it running)
-node bin/token-inspectour.js --open
+node bin/token-inspectour.js ~/path/to/agent-project
+```
 
-# 2. in another terminal, run Claude Code through the proxy from any agent project
+That starts the proxy and the UI, opens the UI in your browser, and launches `claude` in that project through the proxy, all in the current terminal. Use Claude Code as normal. Each API call shows up in the UI as it happens. When Claude Code exits, the inspector keeps serving the UI until you press Ctrl-C.
+
+Anything after `--` is passed to `claude`:
+
+```sh
+node bin/token-inspectour.js ~/path/to/agent-project -- -p "summarize the repo"
+node bin/token-inspectour.js ~/path/to/agent-project -- --continue
+```
+
+### Inspecting several agents at once
+
+Run one inspector per agent, each in its own terminal:
+
+```sh
+# terminal 1
+node bin/token-inspectour.js ~/agents/growth
+# terminal 2
+node bin/token-inspectour.js ~/agents/sales
+```
+
+Every instance picks the next free proxy and UI ports (4141/4142, then 4143/4144, and so on) and opens its own browser tab, titled with the project name and port. Each UI shows the sessions its own proxy captured.
+
+### Proxy-only mode
+
+If you would rather attach Claude Code yourself, or run a headless pipeline through a fixed port:
+
+```sh
+node bin/token-inspectour.js --proxy-only -p 4141
+# any project, any terminal, on one line:
 cd ~/path/to/agent-project && ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude
 ```
 
-Keep both commands on one line each. Or let the inspector launch Claude Code for you in a given project (arguments after `--run` go to `claude`):
-
-```sh
-node bin/token-inspectour.js ~/path/to/agent-project --open --run
-node bin/token-inspectour.js ~/path/to/agent-project --run -p "summarize the repo"
-```
-
-Open http://127.0.0.1:4142. Each API call shows up on the left as it happens, grouped by session and labelled with the project it came from.
-
 ### Works with any agent
 
-The proxy is project-agnostic. Each session's project directory is read from the request itself (the harness tells the model its working directory; the `CLAUDE.md` paths are the fallback), and an inventory is scanned per detected project on first sight. You can run several agents through one proxy at the same time. A project with no `.claude/` of its own still gets a meaningful inventory: the parent `CLAUDE.md` chain, user-level skills, agents, settings, memory, and plugins.
+The proxy is project-agnostic. Each session's project directory is read from the request itself (the harness tells the model its working directory; the `CLAUDE.md` paths are the fallback), and an inventory is scanned per detected project on first sight. A project with no `.claude/` of its own still gets a meaningful inventory: the parent `CLAUDE.md` chain, user-level skills, agents, settings, memory, and plugins.
 
 Subagent turns (the Agent tool) are captured like any other call and labelled with the agent definition whose body appears in their system prompt. Skill invocations and file reads are attributed to the skill or file they came from.
 
@@ -91,20 +110,21 @@ Anything left over inside a reminder is `reminder`, inside the system prompt is 
 ## CLI
 
 ```
-token-inspectour [projectDir] [options]
+token-inspectour [projectDir] [options] [-- claude args…]
 
-  projectDir            Default project (default: cwd); each session's project is detected
-  -p, --port <n>        Proxy port Claude Code connects to        (default 4141)
-  -u, --ui <n>          UI port                                   (default 4142)
-  --upstream <url>      Real API base URL                         (default https://api.anthropic.com)
-  --run [args…]         Launch `claude` in projectDir through the proxy
+  projectDir            Project to launch Claude Code in (default: cwd)
+  -- <args…>            Passed to claude
+  --proxy-only          Do not launch claude; just run the proxy + UI
+  -p, --port <n>        Proxy port (default: first free port from 4141)
+  -u, --ui <n>          UI port    (default: the port after the proxy port)
+  --upstream <url>      Real API base URL (default https://api.anthropic.com)
+  --no-open             Do not open the UI in the browser
   --no-count            Estimates only; never call count_tokens
   --no-persist          Do not write captures to ~/.token-inspectour
   --clear               Delete previously captured sessions on start
-  --open                Open the UI in the browser
 ```
 
-Captures live in `~/.token-inspectour/captures/<session>/`, one JSON per call, with auth headers redacted. Set `TOKEN_INSPECTOUR_HOME` to move that directory.
+Captures live in `~/.token-inspectour/captures/<session>/`, one JSON per call, with auth headers redacted. In launch mode the inspector's own log goes to `~/.token-inspectour/logs/inspector-<port>.log` so it never draws over Claude Code's screen. Set `TOKEN_INSPECTOUR_HOME` to move that directory.
 
 ## Notes
 
