@@ -1,9 +1,10 @@
-// token-inspectour UI. Compiled by `tsc -p tsconfig.ui.json` to dist/ui/app.js and served
-// under /<agent>/app.js. Type-only imports are erased, so the output has no module imports.
-import type * as CyNS from 'cytoscape';
-import type { Analysis, DiffEntry, Part, PublicSource, RequestSummary, SessionSummary, SourceUsage, Span, AdhocSource, AssembledResponse, SlimAnalysis, GraphData, GraphNodeData } from '../src/types.js';
+// token-inspectour inspector UI. Compiled by `tsc -p tsconfig.ui.json` to dist/ui/app.js and
+// served under /<agent>/app.js; shared helpers live in common.ts. The flow-graph is its own
+// page (graph.html / graph.ts), reached through the "graph" link in the header.
+import type { Analysis, DiffEntry, Part, PublicSource, RequestSummary, SessionSummary, SourceUsage, Span, AdhocSource, AssembledResponse, SlimAnalysis } from '../src/types.js';
+import { $, $$, BASE, NAME, api, basename, esc, fmt, KINDS, kindColor, kindLabel, pct, renderSourcePanel, short } from './common.js';
+import type { Kinds } from './common.js';
 
-type Kinds = Record<string, { label: string; color: string }>;
 type UiSource = PublicSource | AdhocSource;
 
 interface State {
@@ -47,28 +48,6 @@ interface RawRequest {
 
 type Tab = 'anatomy' | 'sources' | 'diff' | 'response' | 'raw';
 
-const meta = (n: string): string => (document.querySelector(`meta[name="${n}"]`) as HTMLMetaElement | null)?.content || '';
-const BASE = meta('inspectour-base');
-const NAME = meta('inspectour-name');
-
-const $ = <T extends Element = HTMLElement>(s: string, el: ParentNode = document): T => el.querySelector(s) as T;
-const $$ = <T extends Element = HTMLElement>(s: string, el: ParentNode = document): T[] => Array.from(el.querySelectorAll(s)) as T[];
-const esc = (s: unknown): string => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
-const fmt = (n: number | null | undefined): string => (n == null ? '–' : n.toLocaleString());
-const pct = (a: number, b: number | undefined): string => (b ? ((100 * a) / b).toFixed(1) + '%' : '–');
-const short = (p: string | null | undefined): string => (p || '').replace(/^\/Users\/[^/]+/, '~');
-const basename = (p: string | null | undefined): string => (p || '').split('/').pop() || '';
-
-const G = {
-  cy: null as CyNS.Core | null,
-  mode: 'flow' as 'flow' | 'context',
-  dir: 'LR' as 'LR' | 'TB',
-  data: null as GraphData | null,
-  key: '' as string, // what the current drawing represents (session/request + mode)
-  refreshT: 0 as number,
-  on: false,
-};
-
 const S = {
   state: null as State | null,
   sessions: [] as SessionSummary[],
@@ -82,18 +61,12 @@ const S = {
   sessionAnalyses: new Map<string, SlimAnalysis>(),
 };
 
-async function api<T>(p: string, opt?: RequestInit): Promise<T> {
-  const r = await fetch(BASE + p, opt);
-  if (!r.ok) throw new Error(p + ' ' + r.status);
-  return r.json() as Promise<T>;
-}
-const kindColor = (k: string): string => S.kinds[k]?.color || '#94a3b8';
-const kindLabel = (k: string): string => S.kinds[k]?.label || k;
 const recSources = (): PublicSource[] => S.rec?.inventory?.sources || S.sources;
 
 async function loadState(): Promise<void> {
   S.state = await api<State>('/api/state');
   S.kinds = S.state.kinds;
+  KINDS.kinds = S.kinds;
   S.sources = S.state.inventory.sources;
   S.sessions = S.state.sessions;
   document.title = `${NAME} · token-inspectour :${location.port}`;
@@ -105,11 +78,26 @@ async function loadState(): Promise<void> {
   $('#l-cmd').textContent = cmd;
   renderHeaderPills();
   renderLeft();
+  renderGraphLink();
+  const wanted = new URLSearchParams(location.search).get('request');
+  if (wanted && S.sessions.some((x) => x.requests.some((r) => r.id === wanted))) {
+    history.replaceState(null, '', location.pathname);
+    return select(wanted);
+  }
   const first = S.sessions[0];
   if (!S.sel && first && first.requests.length) {
     S.selSession = first.id;
     void select(first.requests[first.requests.length - 1].id);
   }
+}
+
+// The header's "graph" link opens the standalone flow-graph page on the current selection.
+function renderGraphLink(): void {
+  const q = new URLSearchParams();
+  const sess = S.selSession || S.rec?.sessionId || S.sessions[0]?.id;
+  if (sess) q.set('session', sess);
+  if (S.sel) q.set('request', S.sel);
+  $<HTMLAnchorElement>('#b-graph').href = `${BASE}/graph${q.size ? '?' + q : ''}`;
 }
 
 function renderHeaderPills(): void {
@@ -145,8 +133,8 @@ function renderLeft(): void {
       const id = h.dataset.sess!;
       S.selSession = S.selSession === id ? null : id;
       renderLeft();
-      if (G.on) void drawGraph(true);
-      else if (S.selSession) renderSessionOverview();
+      renderGraphLink();
+      if (S.selSession) renderSessionOverview();
     };
   });
   $$('.req', left).forEach((r) => {
@@ -176,7 +164,7 @@ async function select(id: string): Promise<void> {
   S.selSession = rec.sessionId;
   renderLeft();
   renderCenter();
-  if (G.on) void drawGraph(true);
+  renderGraphLink();
 }
 
 function renderCenter(): void {
@@ -465,30 +453,8 @@ function renderSessionOverview(): void {
 }
 
 async function openSource(id: string, matchedText?: string): Promise<void> {
-  const side = $('#side');
-  $('#main').classList.add('with-side');
-  side.innerHTML = '<div class="hd"><span class="t">loading…</span></div>';
-  let s: PublicSource & { content?: string };
-  try {
-    s = await api<PublicSource & { content: string }>(`/api/sources/${id}`);
-  } catch {
-    const ad = [...recSources(), ...(S.rec?.adhocSources || [])].find((x) => x.id === id);
-    s = ad ? ({ ...ad, content: '(file outside the scanned inventory — content not loaded)' } as PublicSource & { content: string }) : ({ id, name: id, content: '' } as unknown as PublicSource & { content: string });
-  }
-  let content = esc(s.content || '');
-  if (matchedText && s.content) {
-    const needle = matchedText.trim().slice(0, 200);
-    const i = s.content.indexOf(needle);
-    if (i >= 0) {
-      const j = i + Math.min(matchedText.trim().length, s.content.length - i);
-      content = esc(s.content.slice(0, i)) + '<mark>' + esc(s.content.slice(i, j)) + '</mark>' + esc(s.content.slice(j));
-    }
-  }
-  const fm = s.frontmatter && Object.keys(s.frontmatter).length ? `<div class="meta">frontmatter: ${esc(JSON.stringify(s.frontmatter))}</div>` : '';
-  side.innerHTML = `<div class="hd"><span class="k" style="background:${kindColor(s.kind)}"></span><span class="t" title="${esc(s.path)}">${esc(s.name)}</span><span class="pill">${esc(kindLabel(s.kind))}</span><span class="pill">${esc(s.scope || '')}</span><button data-act="close">✕</button></div>
-    <div class="meta">${esc(s.path || '')} · ${fmt(s.size)} chars${s.mtime ? ` · modified ${new Date(s.mtime).toLocaleString()}` : ''}</div>${fm}<div class="txt">${content}</div>`;
-  $<HTMLButtonElement>('[data-act=close]', side).onclick = () => $('#main').classList.remove('with-side');
-  if (matchedText) $('mark', side)?.scrollIntoView({ block: 'center' });
+  const fallback = [...recSources(), ...(S.rec?.adhocSources || [])].find((x) => x.id === id) as PublicSource | undefined;
+  return renderSourcePanel(id, fallback, matchedText);
 }
 
 function live(): void {
@@ -502,7 +468,10 @@ function live(): void {
     if (!S.sel && data && data.id) {
       S.selSession = data.sessionId;
       void select(data.id);
-    } else renderLeft();
+    } else {
+      renderLeft();
+      renderGraphLink();
+    }
   };
   const parse = (e: Event): RequestSummary => JSON.parse((e as MessageEvent).data) as RequestSummary;
   es.addEventListener('request', (e) => {
@@ -515,14 +484,12 @@ function live(): void {
     const d = parse(e);
     void refresh(d);
     if (S.sel === d.id) void select(d.id);
-    scheduleGraphRefresh();
   });
   es.addEventListener('analysis', (e) => {
     const d = parse(e);
     void refresh(d);
     S.sessionAnalyses.delete(d.id);
     if (S.sel === d.id) void select(d.id);
-    scheduleGraphRefresh();
   });
   es.addEventListener('inventory', () => void refresh());
   es.addEventListener('cleared', () => {
@@ -538,253 +505,3 @@ $<HTMLButtonElement>('#b-clear').onclick = () => {
   if (confirm('Delete all captured sessions?')) void api('/api/clear', { method: 'POST' });
 };
 void loadState().then(live);
-
-// ============================================================================
-// flow-graph: interactive Cytoscape view of a session (turns → tool calls → results)
-// or of one request's context composition (sources → areas → request).
-// ============================================================================
-
-type GMode = 'flow' | 'context';
-
-const cssVar = (n: string): string => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const isDark = (): boolean => matchMedia('(prefers-color-scheme: dark)').matches;
-
-// Theme-aware stylesheet. Kind colours come from the server palette so the graph matches
-// the inspector's legend; fills are soft tints, borders carry the hue.
-function graphStyle(): CyNS.Stylesheet[] {
-  const ink = cssVar('--ink') || '#1a1a1a';
-  const muted = cssVar('--muted') || '#6b7280';
-  const panel = cssVar('--panel') || '#fff';
-  const line = isDark() ? '#3b4252' : '#c7cdd6';
-  const accent = cssVar('--accent') || '#2563eb';
-  const tint = isDark() ? '33' : '22';
-  const fill = (k: string) => kindColor(k) + tint;
-  const font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif";
-  const st: Array<{ selector: string; style: Record<string, unknown> }> = [
-    { selector: 'core', style: { 'active-bg-opacity': 0, 'selection-box-color': accent, 'selection-box-opacity': 0.08 } },
-    { selector: 'node', style: {
-      shape: 'round-rectangle', width: 'label', height: 'label', padding: '9px',
-      'background-color': panel, 'background-opacity': 1, 'border-width': 1.5, 'border-color': line,
-      label: 'data(label)', color: ink, 'font-family': font, 'font-size': 11, 'text-wrap': 'wrap', 'text-max-width': '190px',
-      'text-valign': 'center', 'text-halign': 'center', 'line-height': 1.25,
-      'transition-property': 'opacity, border-width, border-color', 'transition-duration': 150, 'min-zoomed-font-size': 6,
-    } },
-    { selector: 'node[kind = "turn"]', style: { 'font-size': 12, 'font-weight': 600, 'background-color': isDark() ? '#1e2a44' : '#e8effd', 'border-color': accent, 'border-width': 2, padding: '12px', 'text-max-width': '220px' } },
-    { selector: 'node[kind = "request"]', style: { 'font-size': 12, 'font-weight': 600, 'background-color': isDark() ? '#1e2a44' : '#e8effd', 'border-color': accent, 'border-width': 2, padding: '14px' } },
-    { selector: 'node[kind = "area"]', style: { 'font-weight': 600, 'background-color': fill('harness'), 'border-color': kindColor('harness'), padding: '11px', shape: 'round-rectangle' } },
-    { selector: 'node[kind = "side"]', style: { 'font-size': 10, color: muted, 'border-style': 'dashed', 'border-color': line, 'background-color': panel, padding: '6px' } },
-    { selector: 'node[kind = "group"]', style: {
-      shape: 'round-rectangle', 'background-color': isDark() ? '#ffffff' : '#000000', 'background-opacity': 0.035, 'border-width': 1, 'border-style': 'dashed', 'border-color': line,
-      label: 'data(label)', color: muted, 'font-size': 10, 'font-weight': 600, 'text-transform': 'uppercase', 'text-valign': 'top', 'text-halign': 'center', 'text-margin-y': -4, padding: '14px',
-    } },
-    { selector: 'node[sub]', style: { label: (n: CyNS.NodeSingular) => `${n.data('label')}\n${n.data('sub')}` } },
-    { selector: 'node[tokens]', style: { label: (n: CyNS.NodeSingular) => {
-      const k = n.data('kind') as string;
-      const t = n.data('tokens') as number | undefined;
-      const o = n.data('tokensOut') as number | undefined;
-      const sub = n.data('sub') as string | undefined;
-      const tok = t == null ? '' : k === 'turn' || k === 'request' || k === 'side' ? `${fmtKk(t)} in${o != null ? ` · ${fmtKk(o)} out` : ''}` : k === 'area' ? `${fmtKk(t)} tokens` : '';
-      return [n.data('label'), sub, tok].filter(Boolean).join('\n');
-    } } },
-    { selector: 'edge', style: {
-      width: 'mapData(tokens, 0, 8000, 1.2, 5)', 'line-color': line, 'target-arrow-color': line, 'target-arrow-shape': 'triangle', 'arrow-scale': 0.85,
-      'curve-style': 'bezier', 'control-point-step-size': 40, 'line-cap': 'round',
-      label: 'data(label)', 'font-size': 9.5, 'font-family': font, color: muted,
-      'text-background-color': panel, 'text-background-opacity': 1, 'text-background-padding': '2px', 'text-background-shape': 'roundrectangle',
-      'text-rotation': 'autorotate', 'transition-property': 'opacity, line-color, width', 'transition-duration': 150,
-    } },
-    { selector: 'edge[kind = "next"]', style: { 'line-color': accent, 'target-arrow-color': accent, width: 2.5, 'curve-style': 'straight' } },
-    { selector: 'edge[kind = "side"]', style: { 'line-style': 'dashed', 'target-arrow-shape': 'none', width: 1 } },
-    { selector: 'edge[kind = "result"]', style: { 'line-style': 'dotted', 'line-dash-pattern': [2, 4] } },
-    { selector: 'edge[kind = "spawn"]', style: { 'line-color': kindColor('agent'), 'target-arrow-color': kindColor('agent'), width: 2 } },
-    { selector: 'edge[kind = "feeds"]', style: { 'curve-style': 'unbundled-bezier', 'control-point-distances': [0], 'control-point-weights': [0.5], 'line-color': line, 'target-arrow-shape': 'none', 'line-opacity': 0.75 } },
-    { selector: 'node:selected', style: { 'border-color': accent, 'border-width': 3, 'overlay-opacity': 0 } },
-    { selector: '.dim', style: { opacity: 0.18 } },
-    { selector: 'node.hl', style: { 'border-width': 2.5 } },
-    { selector: 'edge.hl', style: { 'line-color': accent, 'target-arrow-color': accent, opacity: 1 } },
-  ];
-  // one rule per kind colour: tinted fill + coloured border, so the graph reads like the anatomy bar
-  for (const k of Object.keys(S.kinds)) {
-    st.push({ selector: `node[kind = "${k}"]`, style: { 'background-color': fill(k), 'border-color': kindColor(k) } });
-  }
-  return st as unknown as CyNS.Stylesheet[];
-}
-
-const fmtKk = (n: number): string => (n >= 10000 ? `${(n / 1000).toFixed(1)}k` : n >= 1000 ? `${(n / 1000).toFixed(2).replace(/\.?0+$/, '')}k` : String(n));
-
-function layoutOptions(): CyNS.LayoutOptions {
-  return {
-    name: 'dagre', rankDir: G.dir, nodeSep: 22, rankSep: G.mode === 'context' ? 110 : 70, edgeSep: 10, ranker: 'network-simplex',
-    animate: true, animationDuration: 380, animationEasing: 'ease-in-out-cubic', fit: true, padding: 36, spacingFactor: 1,
-  } as unknown as CyNS.LayoutOptions;
-}
-
-function ensureCy(): CyNS.Core {
-  if (G.cy) return G.cy;
-  const cy = cytoscape({
-    container: $('#cy') as HTMLElement, style: graphStyle(), elements: [], minZoom: 0.15, maxZoom: 3, wheelSensitivity: 0.25,
-    boxSelectionEnabled: false, autoungrabify: false, pixelRatio: 'auto',
-  });
-  const tip = $('#tip');
-  cy.on('mouseover', 'node', (ev) => {
-    const n = ev.target as CyNS.NodeSingular;
-    if (n.data('kind') === 'group') return;
-    const hood = n.closedNeighborhood();
-    cy.elements().not(hood).addClass('dim');
-    hood.addClass('hl');
-    const d = n.data() as GraphNodeData;
-    const bits = [`<b>${esc(d.label)}</b>`];
-    if (d.sub) bits.push(esc(d.sub));
-    if (d.tokens != null) bits.push(`${fmt(d.tokens)} tokens${d.tokensOut != null ? ` in · ${fmt(d.tokensOut)} out` : ''}`);
-    if (d.detail && typeof d.detail.resultTokens === 'number') bits.push(`result: ${fmt(d.detail.resultTokens as number)} tokens`);
-    bits.push('<span style="opacity:.7">click for details</span>');
-    tip.innerHTML = bits.join('<br>');
-    tip.style.display = 'block';
-  });
-  cy.on('mousemove', (ev) => {
-    const oe = ev.originalEvent as MouseEvent | undefined;
-    if (oe && tip.style.display === 'block') {
-      tip.style.left = Math.min(window.innerWidth - 440, oe.clientX + 14) + 'px';
-      tip.style.top = oe.clientY + 14 + 'px';
-    }
-  });
-  cy.on('mouseout', 'node', () => {
-    cy.elements().removeClass('dim hl');
-    tip.style.display = 'none';
-  });
-  cy.on('tap', 'node', (ev) => {
-    const n = ev.target as CyNS.NodeSingular;
-    if (n.data('kind') !== 'group') void showGraphDetail(n.data() as GraphNodeData);
-  });
-  cy.on('tap', (ev) => {
-    if (ev.target === cy) $('#main').classList.remove('with-side');
-  });
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => cy.style(graphStyle()));
-  G.cy = cy;
-  return cy;
-}
-
-function renderLegend(data: GraphData): void {
-  const kinds = new Set<string>();
-  for (const n of data.nodes) if (n.data.kind !== 'group') kinds.add(n.data.kind);
-  const label = (k: string): string => ({ turn: 'agent turn', side: 'side call', request: 'request', area: 'request area' } as Record<string, string>)[k] || kindLabel(k);
-  const color = (k: string): string => ({ turn: cssVar('--accent'), request: cssVar('--accent'), side: cssVar('--muted'), area: kindColor('harness') } as Record<string, string>)[k] || kindColor(k);
-  $('#glegend').innerHTML = [...kinds].map((k) => `<span><span class="k" style="background:${color(k)}"></span>${esc(label(k))}</span>`).join('') +
-    (data.mode === 'flow' ? `<span><span class="k" style="background:${cssVar('--accent')};height:2px;vertical-align:middle"></span>next turn (+tokens added)</span><span><span class="k" style="border-bottom:2px dotted ${cssVar('--muted')};background:none;height:0"></span>result back</span>` : '<span>edge width = tokens</span>');
-}
-
-async function drawGraph(force = false): Promise<void> {
-  if (!G.on) return;
-  const sessId = S.selSession || S.rec?.sessionId || S.sessions[0]?.id;
-  const reqId = S.sel || S.rec?.id;
-  let url: string | null = null;
-  if (G.mode === 'flow' && sessId) url = `/api/sessions/${sessId}/graph`;
-  if (G.mode === 'context' && reqId) url = `/api/requests/${reqId}/graph`;
-  const empty = $('#gempty');
-  if (!url) {
-    empty.hidden = false;
-    empty.textContent = G.mode === 'flow' ? 'Select a session on the left to draw its flow.' : 'Select a request on the left to draw its context.';
-    return;
-  }
-  const data = await api<GraphData>(url);
-  const cy = ensureCy();
-  const key = `${G.mode}:${url}:${G.dir}`;
-  const elements = [...data.nodes.map((n) => ({ group: 'nodes' as const, data: n.data as unknown as Record<string, unknown> })), ...data.edges.map((e) => ({ group: 'edges' as const, data: e.data as unknown as Record<string, unknown> }))];
-  empty.hidden = data.nodes.length > 0;
-  if (!data.nodes.length) empty.textContent = 'Nothing to draw yet: no completed calls in this selection.';
-  const prevIds = new Set(cy.nodes().map((n) => n.id()));
-  const sameShape = !force && key === G.key && data.nodes.length === prevIds.size && data.nodes.every((n) => prevIds.has(n.data.id));
-  G.data = data;
-  G.key = key;
-  if (sameShape) {
-    // update weights/labels in place, keep positions
-    for (const n of data.nodes) cy.getElementById(n.data.id).data(n.data as unknown as Record<string, unknown>);
-    for (const e of data.edges) {
-      const el = cy.getElementById(e.data.id);
-      if (el.length) el.data(e.data as unknown as Record<string, unknown>);
-      else cy.add({ group: 'edges', data: e.data as unknown as Record<string, unknown> });
-    }
-  } else {
-    cy.elements().remove();
-    cy.add(elements);
-    cy.layout(layoutOptions()).run();
-  }
-  renderLegend(data);
-  const st = data.stats;
-  $('#gstats').textContent = data.mode === 'flow'
-    ? `${st.turns} turns · ${st.calls} tool calls · ${st.sideCalls} side calls · ${fmt(st.promptTokens)} prompt tokens · ${fmt(st.outputTokens)} output`
-    : `${st.sources} sources · ${fmt(st.tokens)} prompt tokens`;
-}
-
-async function showGraphDetail(d: GraphNodeData): Promise<void> {
-  if (d.ref?.type === 'source') return openSource(d.ref.id);
-  const side = $('#side');
-  $('#main').classList.add('with-side');
-  const det = d.detail || {};
-  const kv = (rows: Array<[string, unknown]>): string => `<div class="kv">${rows.filter(([, v]) => v != null && v !== '').map(([k, v]) => `<span class="muted">${esc(k)}</span><b>${esc(typeof v === 'number' ? v.toLocaleString() : String(v))}</b>`).join('')}</div>`;
-  let body = '';
-  if (d.ref?.type === 'request' || d.kind === 'turn' || d.kind === 'side' || d.kind === 'request') {
-    const byKind = (det.byKind || {}) as Record<string, number>;
-    body = kv([['step', det.seq], ['model', det.model], ['status', det.status], ['stop', det.stopReason], ['duration', det.durationMs != null ? `${det.durationMs} ms` : null], ['prompt tokens', d.tokens], ['output tokens', d.tokensOut], ['cache read', det.cacheRead], ['cache write', det.cacheWrite], ['uncached', det.uncached]]);
-    const kinds = Object.entries(byKind).sort((a, b) => b[1] - a[1]);
-    if (kinds.length) body += `<h4>prompt by source kind</h4>${kv(kinds.map(([k, v]) => [kindLabel(k), v]))}`;
-    if (det.userPreview) body += `<h4>user</h4><pre>${esc(det.userPreview)}</pre>`;
-    if (det.assistantPreview) body += `<h4>assistant</h4><pre>${esc(det.assistantPreview)}</pre>`;
-    body += `<p><button data-act="open-inspect">open in inspector</button></p>`;
-  } else if (d.ref?.type === 'call') {
-    body = kv([['tool', det.tool], ['turn', det.turn], ['input tokens (≈)', d.tokens], ['result tokens', det.resultTokens], ['error', det.isError ? 'yes' : null]]);
-    body += `<h4>input</h4><pre>${esc(JSON.stringify(det.input ?? {}, null, 2))}</pre>`;
-    if (det.resultPreview) body += `<h4>result (first 400 chars)</h4><pre>${esc(String(det.resultPreview))}</pre>`;
-  } else if (d.ref?.type === 'area') {
-    body = kv([['area', d.label], ['tokens', d.tokens]]) + '<p class="muted small">Open the request in the inspector to see every part of this area.</p><p><button data-act="open-inspect">open in inspector</button></p>';
-  } else {
-    body = kv([['kind', kindLabel(d.kind)], ['tokens', d.tokens]]);
-  }
-  side.innerHTML = `<div class="hd"><span class="k" style="background:${d.kind === 'turn' || d.kind === 'request' ? cssVar('--accent') : kindColor(d.kind)}"></span><span class="t">${esc(d.label)}</span><button data-act="close">✕</button></div><div id="gdetail">${body}</div>`;
-  $<HTMLButtonElement>('[data-act=close]', side).onclick = () => $('#main').classList.remove('with-side');
-  const open = side.querySelector<HTMLButtonElement>('[data-act=open-inspect]');
-  if (open) open.onclick = () => {
-    const id = d.ref?.type === 'request' ? d.ref.id : d.ref?.requestId;
-    setMode(false);
-    if (id) void select(id);
-  };
-}
-
-function setMode(graph: boolean): void {
-  G.on = graph;
-  $('#main').classList.toggle('graph', graph);
-  $('#graph').hidden = !graph;
-  $('#b-graph').classList.toggle('on', graph);
-  $('#b-inspect').classList.toggle('on', !graph);
-  $('#main').classList.remove('with-side');
-  if (graph) {
-    void drawGraph(true).then(() => G.cy?.resize());
-  }
-}
-
-function scheduleGraphRefresh(): void {
-  if (!G.on) return;
-  window.clearTimeout(G.refreshT);
-  G.refreshT = window.setTimeout(() => void drawGraph(false), 400);
-}
-
-$<HTMLButtonElement>('#b-graph').onclick = () => setMode(true);
-$<HTMLButtonElement>('#b-inspect').onclick = () => setMode(false);
-$$<HTMLButtonElement>('[data-gmode]').forEach((b) => {
-  b.onclick = () => {
-    G.mode = b.dataset.gmode as GMode;
-    $$('[data-gmode]').forEach((x) => x.classList.toggle('on', x === b));
-    void drawGraph(true);
-  };
-});
-$$<HTMLButtonElement>('[data-gdir]').forEach((b) => {
-  b.onclick = () => {
-    G.dir = b.dataset.gdir as 'LR' | 'TB';
-    $$('[data-gdir]').forEach((x) => x.classList.toggle('on', x === b));
-    G.cy?.layout(layoutOptions()).run();
-    G.key = '';
-  };
-});
-$<HTMLButtonElement>('[data-gact=fit]').onclick = () => G.cy?.animate({ fit: { eles: G.cy.elements(), padding: 36 }, duration: 250 });
-$<HTMLButtonElement>('[data-gact=relayout]').onclick = () => G.cy?.layout(layoutOptions()).run();
-window.addEventListener('resize', () => G.cy?.resize());

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flow-graph · token-inspectour</title>
+<meta name="inspectour-base" content="__INSPECTOUR_BASE__">
+<meta name="inspectour-name" content="__INSPECTOUR_NAME__">
+<link rel="stylesheet" href="base.css">
+<style>
+/* graph page: full-width canvas, optional details panel on the right */
+#main{grid-template-columns:1fr}
+#main.with-side{grid-template-columns:1fr 440px}
+#graph{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
+.gbar{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);flex-wrap:wrap}
+.gbar select{font:inherit;color:inherit;background:var(--soft);border:1px solid var(--line);border-radius:6px;padding:4px 6px;max-width:min(48vw,520px)}
+.gbar .seg{display:inline-flex}
+.gbar .seg button{border-radius:0;margin-left:-1px}
+.gbar .seg button:first-child{border-radius:6px 0 0 6px;margin-left:0}
+.gbar .seg button:last-child{border-radius:0 6px 6px 0}
+.gbar .seg button.on{background:var(--soft);border-color:var(--accent);color:var(--accent);font-weight:600;position:relative;z-index:1}
+#cy{flex:1;min-height:0}
+.glegend{position:absolute;left:14px;bottom:12px;display:flex;flex-wrap:wrap;gap:4px 12px;max-width:70%;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(6px);font-size:11px;pointer-events:none}
+.glegend:empty{display:none}
+#graph .empty{position:absolute;inset:44px 0 0 0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+#graph .empty[hidden]{display:none}
+#gdetail{padding:10px 12px;font-size:12px}
+#gdetail h4{margin:10px 0 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+#gdetail .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px}
+#gdetail .kv b{font-family:var(--mono);font-weight:500}
+#gdetail pre{white-space:pre-wrap;word-break:break-word;font-size:11px;background:var(--bg);padding:6px;border-radius:4px;max-height:40vh;overflow:auto}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>flow-graph <span class="pill" id="h-name" title="agent name (route prefix)">…</span></h1>
+    <span class="kv">project <b id="h-project">…</b></span>
+    <span class="grow"></span>
+    <a id="b-inspect" class="btn" href="./" title="Back to the inspector">← inspector</a>
+  </header>
+  <div id="main">
+    <div id="graph">
+      <div class="gbar">
+        <select id="sel-session" title="session to draw"><option value="">loading…</option></select>
+        <select id="sel-request" title="request to draw (turn context mode)" hidden></select>
+        <span class="seg"><button data-gmode="flow" class="on" title="Turns, tool calls, MCP, subagents and side calls of the selected session">session flow</button><button data-gmode="context" title="Which sources feed which part of the selected request">turn context</button></span>
+        <span class="seg"><button data-gdir="LR" class="on" title="left to right">→</button><button data-gdir="TB" title="top to bottom">↓</button></span>
+        <button data-gact="fit" title="fit to view">fit</button>
+        <button data-gact="relayout" title="run the layout again">relayout</button>
+        <span class="grow"></span>
+        <span id="gstats" class="small muted"></span>
+      </div>
+      <div id="cy"></div>
+      <div id="glegend" class="glegend"></div>
+      <div id="gempty" class="empty">Loading…</div>
+    </div>
+    <div id="side"></div>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+<script src="vendor/dagre.min.js"></script>
+<script src="vendor/cytoscape.min.js"></script>
+<script src="vendor/cytoscape-dagre.js"></script>
+<script type="module" src="graph.js"></script>
+</body>
+</html>

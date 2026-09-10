@@ -17,7 +17,6 @@
     "sourceMap": false
   },
   "include": [
-    "ui/app.ts",
-    "ui/globals.d.ts"
+    "ui/*.ts"
   ]
 }

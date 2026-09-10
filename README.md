@@ -12,11 +12,11 @@ token-inspectour is a local proxy with a browser UI. It sits between Claude Code
                                                │ captures request + response
                                                ▼
                                       ┌──────────────────┐
-                                      │  UI :4142/<agent>│  anatomy · sources · step diff · response · raw
+                                      │  UI :4142/<agent>│  anatomy · sources · step diff · response · raw · flow-graph page
                                       └──────────────────┘
 ```
 
-Written in TypeScript with no runtime dependencies beyond two vendored MIT graph libraries. One HTML page, a few hundred lines of Node.
+Written in TypeScript with no runtime dependencies beyond two vendored MIT graph libraries. Two HTML pages (inspector and flow-graph), a few hundred lines of Node.
 
 ## Why
 
@@ -100,7 +100,7 @@ Expand any part to read its text with each span tinted by kind. Hover a span for
 
 **Raw.** Headers and bodies as captured, with credentials redacted.
 
-**Flow-graph.** The `flow-graph` button in the header switches to an interactive diagram of the selected session, drawn with Cytoscape.js and laid out with dagre. Agent turns run left to right (or top to bottom), each turn fans out into the tool calls it made, grouped by MCP server where relevant, with the result flowing back into the next turn. Edge width follows tokens, the turn-to-turn edge carries the tokens added by that step, and subagent spawns and side calls (session titling, compaction) are drawn in their own styles. A second mode, *turn context*, shows one request as a flow from sources (CLAUDE.md files, skills, memory, harness, tools) into the system, tools, and messages areas and on into the request, so you can see at a glance what the context is made of. Hover highlights the neighbourhood, click opens the details panel, and the graph updates live as new calls arrive. The two library files are vendored under `ui/vendor/` with their MIT licenses; nothing is fetched from a CDN.
+**Flow-graph.** The `graph` button in the header opens a separate page, `/<agent>/graph`, with an interactive diagram of the selected session, drawn with Cytoscape.js and laid out with dagre. The page has its own session picker and stays in sync with the inspector through the URL (`?session=…&request=…`), so it can live in a second tab or window while you keep inspecting. Agent turns run left to right (or top to bottom), each turn fans out into the tool calls it made, grouped by MCP server where relevant, with the result flowing back into the next turn. Edge width follows tokens, the turn-to-turn edge carries the tokens added by that step, and subagent spawns and side calls (session titling, compaction) are drawn in their own styles. A second mode, *turn context*, shows one request as a flow from sources (CLAUDE.md files, skills, memory, harness, tools) into the system, tools, and messages areas and on into the request, so you can see at a glance what the context is made of. Hover highlights the neighbourhood, click opens the details panel (with a link back to that step in the inspector), and the graph updates live as new calls arrive. The two library files are vendored under `ui/vendor/` with their MIT licenses; nothing is fetched from a CDN.
 
 ## Token counts
 
@@ -162,7 +162,7 @@ Captures are written to `~/.token-inspectour/captures/<session>/`, one JSON file
 
 - Tested with Claude Code 2.1.x on macOS with both OAuth and API-key sessions. The attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, some spans will fall back to `harness` or `reminder` until the regexes in `src/analyze.ts` are updated.
 - Claude Code must honour `ANTHROPIC_BASE_URL`, which it does in every mode we tried. Third-party gateways that Claude Code is already pointed at can be chained with `--upstream`.
-- The UI is a single dependency-free page (`ui/index.html` + compiled `app.js`); it has been exercised against real sessions but not across many browsers.
+- The UI is two dependency-free pages (`ui/index.html` and `ui/graph.html` plus their compiled scripts); it has been exercised against real sessions but not across many browsers.
 
 ## Development
 
@@ -172,7 +172,7 @@ npm test            # build, then node --test dist/test/
 npm run typecheck   # strict type check without emitting
 ```
 
-The code is strict TypeScript compiled to ES modules on `node:http`; the only dev dependency is the TypeScript compiler. `src/types.ts` holds the shared data model (requests, sources, parts, spans, analyses, summaries) that the backend and the browser UI both compile against. `src/proxy.ts` captures, `src/sse.ts` assembles streams, `src/inventory.ts` scans, `src/analyze.ts` attributes and counts, `src/tokens.ts` talks to count_tokens, `src/store.ts` persists, `src/server.ts` serves the UI and JSON API, `src/graph.ts` builds the flow-graph data, `src/cli.ts` wires it together. The UI is `ui/index.html` plus `ui/app.ts`; `ui/vendor/` holds Cytoscape.js, dagre, and cytoscape-dagre (all MIT).
+The code is strict TypeScript compiled to ES modules on `node:http`; the only dev dependency is the TypeScript compiler. `src/types.ts` holds the shared data model (requests, sources, parts, spans, analyses, summaries) that the backend and the browser UI both compile against. `src/proxy.ts` captures, `src/sse.ts` assembles streams, `src/inventory.ts` scans, `src/analyze.ts` attributes and counts, `src/tokens.ts` talks to count_tokens, `src/store.ts` persists, `src/server.ts` serves the UI and JSON API, `src/graph.ts` builds the flow-graph data, `src/cli.ts` wires it together. The UI is `ui/index.html` plus `ui/app.ts` (inspector), `ui/graph.html` plus `ui/graph.ts` (flow-graph page), `ui/common.ts` (shared helpers) and `ui/base.css` (shared styles); `ui/vendor/` holds Cytoscape.js, dagre, and cytoscape-dagre (all MIT), loaded only by the graph page.
 
 Issues and pull requests are welcome. If you hit a request shape that is not attributed correctly, an anonymised capture (delete the message text, keep the structure) makes it easy to fix.
 

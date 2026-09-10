@@ -14,7 +14,7 @@ import type { CaptureRecord, Inventory, RequestBody, Session, SessionSummary, So
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // dist/src
 const UI_DIR = path.join(HERE, '..', '..', 'ui'); // source html
-const UI_BUILD = path.join(HERE, '..', 'ui'); // compiled app.js
+const UI_BUILD = path.join(HERE, '..', 'ui'); // compiled app.js / graph.js / common.js
 
 export interface ServerContext {
   name: string;
@@ -79,10 +79,11 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }: { port: number;
       if (p.startsWith(base + '/')) p = p.slice(base.length);
       else if (!p.startsWith('/api/') && p !== '/events') return json(res, 404, { error: `not found; this instance is served at ${base}/` });
 
-      if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
-        return file(res, UI_DIR, 'index.html', 'text/html; charset=utf-8', (s) => s.replace('__INSPECTOUR_BASE__', base).replace('__INSPECTOUR_NAME__', ctx.name));
-      }
-      if (req.method === 'GET' && p === '/app.js') return file(res, UI_BUILD, 'app.js', 'text/javascript; charset=utf-8');
+      const page = (name: string) => file(res, UI_DIR, name, 'text/html; charset=utf-8', (s) => s.replace('__INSPECTOUR_BASE__', base).replace('__INSPECTOUR_NAME__', ctx.name));
+      if (req.method === 'GET' && (p === '/' || p === '/index.html')) return page('index.html');
+      if (req.method === 'GET' && (p === '/graph' || p === '/graph.html')) return page('graph.html');
+      if (req.method === 'GET' && (p === '/app.js' || p === '/graph.js' || p === '/common.js')) return file(res, UI_BUILD, p.slice(1), 'text/javascript; charset=utf-8');
+      if (req.method === 'GET' && p === '/base.css') return file(res, UI_DIR, 'base.css', 'text/css; charset=utf-8');
       let vm: RegExpExecArray | null;
       if (req.method === 'GET' && (vm = /^\/vendor\/([A-Za-z0-9._-]+\.js)$/.exec(p))) return file(res, path.join(UI_DIR, 'vendor'), vm[1], 'text/javascript; charset=utf-8');
       if (p === '/events') {
