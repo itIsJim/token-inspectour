@@ -1,7 +1,8 @@
 // Agent-level views of one session for the graph page: a swimlane timeline (main agent, parallel
 // model loops, each subagent, side calls; bars = request start → end) and a spawn tree (turn →
 // Agent call → subagent turns → their calls). Both link Agent tool calls to the subagent turns
-// they started by subagent type and time window. Compiled to dist/ui/agents.js.
+// they started through the thread key set by the server, falling back to subagent type and time
+// window. Compiled to dist/ui/agents.js.
 import type * as D3 from 'd3';
 import type { GraphData, GraphNodeData, RequestSummary } from '../src/types.js';
 import { esc, fmt, fmtKk, hideTip, kindColor, showTip } from './common.js';

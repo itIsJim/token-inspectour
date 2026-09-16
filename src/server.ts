@@ -14,7 +14,7 @@ import type { CaptureRecord, Inventory, RequestBody, Session, SessionSummary, So
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // dist/src
 const UI_DIR = path.join(HERE, '..', '..', 'ui'); // source html
-const UI_BUILD = path.join(HERE, '..', 'ui'); // compiled app.js / graph.js / common.js
+const UI_BUILD = path.join(HERE, '..', 'ui'); // compiled page modules (app.js, graph.js, …)
 
 export interface ServerContext {
   name: string;

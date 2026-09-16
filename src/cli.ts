@@ -13,7 +13,7 @@ import { analyzeRequest, classifyRequest, detectProjectDir } from './analyze.js'
 import { readJsonSafe, exists, dataDir } from './util.js';
 import type { CaptureRecord, Inventory, RequestBody } from './types.js';
 
-const HELP = `token-inspectour — see what Claude Code actually sends to the model
+const HELP = `token-inspectour — inspect what Claude Code sends to the model
 
 Usage: token-inspectour [projectDir] [options] [-- claude args…]
 
