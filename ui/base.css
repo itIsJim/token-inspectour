@@ -286,6 +286,21 @@ svg.flow text{font-family:var(--sans)}
 .glegend .k.line{width:18px;height:0;border-top:2px solid var(--flow-edge);border-radius:0;vertical-align:3px}
 .glegend .k.line.hl{border-top-color:var(--hl)}
 .glegend .k.line.dash{border-top-style:dashed}
+.glegend .k.line.spawn{border-top:2px dashed #0891b2}
+/* agents timeline (agents.ts) */
+svg.atl text{font-family:var(--sans)}
+svg.atl .lane{fill:transparent;stroke:var(--border);stroke-width:1;shape-rendering:crispEdges}
+svg.atl .ln{font-size:12px;font-weight:600;fill:var(--foreground)}
+svg.atl .lc{font-size:10.5px;fill:var(--muted-foreground)}
+svg.atl .axis line{stroke:var(--border);stroke-opacity:.6;shape-rendering:crispEdges}
+svg.atl .axis text{font-size:10px;fill:var(--muted-foreground);font-family:var(--mono)}
+svg.atl .brk rect{fill:repeating-linear-gradient(0deg,transparent,transparent 4px,var(--border) 4px,var(--border) 5px);fill:color-mix(in srgb,var(--muted-foreground) 10%,transparent)}
+svg.atl .brk text{font-size:9.5px;fill:var(--muted-foreground)}
+svg.atl .bar{cursor:pointer;stroke:none}
+svg.atl .bar:hover{stroke:var(--foreground);stroke-width:1}
+svg.atl .bar.sel{stroke:var(--hl);stroke-width:2.5}
+svg.atl .bar.err{stroke:var(--rem);stroke-width:1.5}
+svg.atl .spawn{stroke:#0891b2;stroke-width:1.4;stroke-dasharray:4 3;stroke-opacity:.8}
 
 /* ---- tooltip (shared) --------------------------------------------------- */
 .tip{position:fixed;pointer-events:none;background:var(--popover);color:var(--foreground);border:1px solid var(--border);box-shadow:var(--shadow-lg);padding:7px 10px;border-radius:8px;font-size:11.5px;z-index:50;max-width:420px;display:none;line-height:1.5}

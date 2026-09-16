@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { dataDir, readJsonSafe, listDir, nowIso } from './util.js';
+import { dataDir, readJsonSafe, listDir, nowIso, sha } from './util.js';
 import type { CaptureRecord, RequestSummary, Session, SessionSummary } from './types.js';
 
 export type StoreEvent = 'session' | 'request' | 'response' | 'analysis' | 'update' | 'cleared';
@@ -118,6 +118,23 @@ export class Store extends EventEmitter {
   }
 }
 
+/** Text of a request's first message (cache_control and non-text blocks ignored). */
+export function firstMessageText(rec: Pick<CaptureRecord, 'body'>): string {
+  const m = rec.body?.messages?.[0];
+  if (!m) return '';
+  if (typeof m.content === 'string') return m.content;
+  return (m.content || []).map((b) => (b.type === 'text' ? (b as { text?: string }).text || '' : '')).join('\n');
+}
+
+/** Every turn of one conversation (main agent, a parallel loop, one subagent instance) resends the
+ *  same first message, so its hash identifies the thread. Cached on the record. */
+export function threadKey(rec: CaptureRecord): string | null {
+  if (rec.thread !== undefined) return rec.thread;
+  const text = firstMessageText(rec);
+  rec.thread = text ? sha(text).slice(0, 12) : null;
+  return rec.thread;
+}
+
 export function summarize(rec: CaptureRecord | undefined | null): RequestSummary | null {
   if (!rec) return null;
   const u = (rec.response && rec.response.usage) || {};
@@ -150,6 +167,7 @@ export function summarize(rec: CaptureRecord | undefined | null): RequestSummary
     },
     userPreview: rec.userPreview || '',
     assistantPreview: rec.assistantPreview || '',
+    thread: threadKey(rec),
     analysis: rec.analysis ? { totals: rec.analysis.totals, counted: rec.analysis.counted, exactTotal: rec.analysis.exactTotal } : null,
   };
 }

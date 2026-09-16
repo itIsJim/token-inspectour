@@ -371,6 +371,8 @@ export interface CaptureRecord {
   userPreview?: string;
   assistantPreview?: string;
   analysis?: Analysis | null;
+  /** Conversation thread: hash of the first message's text, shared by every turn of one agent or subagent instance. */
+  thread?: string | null;
 }
 
 export interface UsageSummary {
@@ -404,6 +406,7 @@ export interface RequestSummary {
   usage: UsageSummary;
   userPreview: string;
   assistantPreview: string;
+  thread: string | null;
   analysis: { totals: Totals; counted: number; exactTotal: boolean } | null;
 }
 

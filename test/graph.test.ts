@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildFlowGraph, buildContextGraph, fmtK, callKind } from '../src/graph.js';
+import { summarize, threadKey } from '../src/store.js';
 import type { Analysis, CaptureRecord, Source } from '../src/types.js';
 
 const analysis = (over: Partial<Analysis>): Analysis => ({
@@ -82,4 +83,23 @@ test('helpers', () => {
   assert.equal(callKind('Agent', {}, new Set()).kind, 'agent');
   assert.equal(callKind('Skill', {}, new Set()).kind, 'skill');
   assert.equal(callKind('Bash', {}, new Set()).kind, 'harness-tool');
+});
+
+test('Agent calls are linked to the subagent thread whose first message holds their prompt', () => {
+  const resp = (content: unknown[]) => ({ id: null, model: null, role: 'assistant', content, stop_reason: 'tool_use', stop_sequence: null, usage: { input_tokens: 10 }, context_management: null, error: null, eventCount: 0, firstTokenAt: null }) as CaptureRecord['response'];
+  const body = (first: string) => ({ model: 'm', messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: first }] }] });
+  const main = rec({ id: 'm1', seq: 1, kind: 'main', body: body('hello'), response: resp([
+    { type: 'tool_use', id: 'a1', name: 'Agent', input: { subagent_type: 'mapper', prompt: 'Refresh the SCOPE.md for project alpha' } },
+    { type: 'tool_use', id: 'a2', name: 'Agent', input: { subagent_type: 'mapper', prompt: 'Refresh the SCOPE.md for project beta' } },
+  ]) });
+  const subA1 = rec({ id: 's1', seq: 2, kind: 'main:subagent: mapper', body: body('<system-reminder>ctx</system-reminder>\nRefresh the SCOPE.md for project beta') });
+  const subB1 = rec({ id: 's2', seq: 3, kind: 'main:subagent: mapper', body: body('<system-reminder>ctx</system-reminder>\nRefresh the SCOPE.md for project alpha') });
+  const subA2 = rec({ id: 's3', seq: 4, kind: 'main:subagent: mapper', body: { ...body('<system-reminder>ctx</system-reminder>\nRefresh the SCOPE.md for project beta'), messages: [...body('<system-reminder>ctx</system-reminder>\nRefresh the SCOPE.md for project beta').messages, { role: 'assistant' as const, content: 'ok' }] } });
+  const g = buildFlowGraph('s1', [main, subA1, subB1, subA2]);
+  const thread = (id: string) => g.nodes.find((n) => n.data.id === id)!.data.detail!.thread;
+  assert.equal(thread('call:a1'), threadKey(subB1));
+  assert.equal(thread('call:a2'), threadKey(subA1));
+  assert.equal(threadKey(subA1), threadKey(subA2)); // later turns of one instance share the thread
+  assert.notEqual(threadKey(subA1), threadKey(subB1));
+  assert.equal(summarize(subA2)!.thread, threadKey(subA1));
 });

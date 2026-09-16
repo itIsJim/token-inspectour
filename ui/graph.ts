@@ -5,11 +5,12 @@
 import type { GraphData, GraphNodeData, RequestSummary, SessionSummary, PublicSource } from '../src/types.js';
 import { $, $$, BASE, NAME, api, basename, cssVar, esc, fmt, KINDS, kindColor, kindLabel, renderSourcePanel, short } from './common.js';
 import { flowGraph } from './flow.js';
+import { agentTimeline, linkSpawns, spawnTree } from './agents.js';
 import type { FlowHandle } from './flow.js';
 import { sankeyChart } from './charts.js';
 import type { SLink, SNode } from './charts.js';
 
-type GMode = 'flow' | 'context';
+type GMode = 'flow' | 'timeline' | 'tree' | 'context';
 
 interface State {
   projectDir: string;
@@ -22,7 +23,7 @@ const params = new URLSearchParams(location.search);
 
 const G = {
   flow: null as FlowHandle | null,
-  mode: (params.get('mode') === 'context' ? 'context' : 'flow') as GMode,
+  mode: ((['timeline', 'tree', 'context'] as string[]).includes(params.get('mode') || '') ? params.get('mode') : 'flow') as GMode,
   dir: 'LR' as 'LR' | 'TB',
   key: '', // what the current drawing represents (session/request + mode + direction)
   refreshT: 0,
@@ -99,7 +100,7 @@ function renderLegend(data: GraphData): void {
 
 async function draw(force = false): Promise<void> {
   let url: string | null = null;
-  if (G.mode === 'flow' && G.session) url = `/api/sessions/${G.session}/graph`;
+  if (G.mode !== 'context' && G.session) url = `/api/sessions/${G.session}/graph`;
   if (G.mode === 'context' && G.request) url = `/api/requests/${G.request}/graph`;
   const empty = $('#gempty');
   if (!url) {
@@ -112,9 +113,16 @@ async function draw(force = false): Promise<void> {
     return;
   }
   const data = await api<GraphData>(url);
-  $('#flow').hidden = data.mode === 'context';
-  $('#sankey').hidden = data.mode !== 'context';
-  $$('[data-gdir],[data-gact]').forEach((b) => ((b as HTMLButtonElement).disabled = data.mode === 'context'));
+  const shown: Record<string, boolean> = { flow: G.mode === 'flow', timeline: G.mode === 'timeline', tree: G.mode === 'tree', sankey: G.mode === 'context' };
+  for (const [id, on] of Object.entries(shown)) $(`#${id}`).hidden = !on;
+  $$('[data-gdir],[data-gact]').forEach((b) => ((b as HTMLButtonElement).disabled = G.mode !== 'flow'));
+  if (G.mode === 'timeline' || G.mode === 'tree') {
+    empty.hidden = true;
+    G.key = '';
+    G.flow = null;
+    drawAgents(data);
+    return;
+  }
   if (data.mode === 'context') {
     empty.hidden = true;
     drawContextSankey(data);
@@ -143,6 +151,34 @@ async function draw(force = false): Promise<void> {
   renderLegend(data);
   const st = data.stats;
   $('#gstats').textContent = `${st.turns} turns · ${st.calls} tool calls · ${st.sideCalls} side calls · ${fmt(st.promptTokens)} prompt tokens · ${fmt(st.outputTokens)} output`;
+}
+
+// Agents timeline (swimlanes over time) and spawn tree, both from the session's flow data plus
+// the request summaries (start / end times, kinds, usage).
+function drawAgents(data: GraphData): void {
+  const sess = G.sessions.find((s) => s.id === G.session);
+  if (!sess) return;
+  const reqs = sess.requests;
+  const spawns = linkSpawns(data, reqs);
+  const byReq = new Map(data.nodes.filter((n) => n.data.ref?.type === 'request').map((n) => [n.data.ref!.id, n.data]));
+  const subTurns = reqs.filter((r) => /^main:subagent/.test(r.kind || '')).length;
+  if (G.mode === 'timeline') {
+    agentTimeline($('#timeline'), reqs, spawns, {
+      selected: G.request,
+      onClick: (id) => {
+        G.request = id;
+        renderSelects();
+        syncUrl();
+        const d = byReq.get(id);
+        if (d) void showDetail(d);
+      },
+    });
+    $('#glegend').innerHTML = '<span>one lane per agent: main agent, loops on other models, each subagent type, side calls</span><span>bar = request start → end · shade = prompt tokens</span><span><span class="k line spawn"></span>Agent call → first subagent turn</span><span>⋯ idle gaps over 5 min are compressed · wheel to zoom, drag to pan, double-click to reset</span>';
+  } else {
+    spawnTree($('#tree'), data, reqs, spawns, { sessionLabel: sess.agent || basename(sess.projectDir) || sess.id.slice(0, 8), onSelect: (d) => void showDetail(d) });
+    $('#glegend').innerHTML = '<span>session → turn that spawned → Agent call → subagent turns → their tool calls</span><span>click a node for details; click a branch again to expand or collapse</span>';
+  }
+  $('#gstats').textContent = `${spawns.length} subagent spawns · ${subTurns} subagent turns · ${reqs.length} calls`;
 }
 
 // Turn context as a Sankey: sources (or built-in kinds) → request areas → the request.

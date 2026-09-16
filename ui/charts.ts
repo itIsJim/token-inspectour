@@ -356,7 +356,7 @@ export function arcDiagram(el: HTMLElement, nodes: ArcNode[], arcs: Arc[], opts:
 export interface TreeNode { id: string; label: string; color: string; value: number; tip: string; hollow?: boolean; collapsed?: boolean; children?: TreeNode[] }
 
 /** Horizontal tidy tree; click an inner node to expand or collapse it, click a leaf for onLeaf. */
-export function collapsibleTree(el: HTMLElement, data: TreeNode, opts: { onLeaf?: (n: TreeNode) => void } = {}): void {
+export function collapsibleTree(el: HTMLElement, data: TreeNode, opts: { onLeaf?: (n: TreeNode) => void; onSelect?: (n: TreeNode) => void } = {}): void {
   const closed = new Set<string>();
   const walk = (n: TreeNode): void => { if (n.collapsed && n.children?.length) closed.add(n.id); n.children?.forEach(walk); };
   walk(data);
@@ -376,7 +376,7 @@ export function collapsibleTree(el: HTMLElement, data: TreeNode, opts: { onLeaf?
     update = (sourceId, animate) => {
       const root = d3.hierarchy<TreeNode>(data, (d) => (closed.has(d.id) ? null : d.children));
       const depth = Math.max(1, root.height);
-      const room = Math.min(220, Math.max(120, width * 0.16)); // left of the root for its label
+      const room = Math.min(width * 0.3, Math.max(120, 30 + 6.3 * Math.min(44, data.label.length + 8))); // left of the root for its label
       const dy = Math.min(250, Math.max(130, (width - room - 300) / depth));
       d3.tree<TreeNode>().nodeSize([dx, dy])(root);
       const all = root.descendants() as D3.HierarchyPointNode<TreeNode>[];
@@ -391,6 +391,7 @@ export function collapsibleTree(el: HTMLElement, data: TreeNode, opts: { onLeaf?
         .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
         .on('mouseleave', hideTip)
         .on('click', (_ev, n) => {
+          opts.onSelect?.(n.data);
           if (n.data.children?.length) {
             if (closed.has(n.data.id)) closed.delete(n.data.id);
             else closed.add(n.data.id);

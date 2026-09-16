@@ -5,6 +5,7 @@
 //  context — one request: which sources (CLAUDE.md, skills, harness, …) feed which area of
 //            the request (system / tools / messages), edge width by tokens.
 import { KINDS } from './inventory.js';
+import { firstMessageText, threadKey } from './store.js';
 import type { AnySource, CaptureRecord, GraphData, GraphEdge, GraphNode, GraphNodeKind, Part, SourceKind, ToolUseBlock } from './types.js';
 
 const promptTotal = (rec: CaptureRecord): number | undefined => {
@@ -40,6 +41,12 @@ export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpS
   let pendingCalls: Array<{ id: string; toolUseId: string }> = [];
   let firstTurn: string | null = null;
   const orphanSides: string[] = [];
+  // a subagent instance's first message contains the prompt its Agent call was given
+  const subagentThreads = records.filter((r) => /^main:subagent/.test(r.kind || '')).map((r) => ({ text: firstMessageText(r), thread: threadKey(r) }));
+  const threadForPrompt = (prompt: unknown): string | undefined => {
+    const p = typeof prompt === 'string' ? prompt.trim().slice(0, 400) : '';
+    return p ? subagentThreads.find((t) => t.thread && t.text.includes(p))?.thread || undefined : undefined;
+  };
 
   for (const rec of records) {
     const a = rec.analysis;
@@ -118,7 +125,7 @@ export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpS
           id: callId, label: describeInput(c.name, c.input), kind, parent, tokens,
           sub: server ? `mcp · ${server}` : KINDS[kind as SourceKind]?.label || kind,
           ref: { type: 'call', id: c.id, requestId: rec.id },
-          detail: { tool: c.name, input: c.input, turn: rec.seq },
+          detail: { tool: c.name, input: c.input, turn: rec.seq, ...(kind === 'agent' ? { thread: threadForPrompt(c.input?.prompt) } : {}) },
         },
       });
       edges.push({ data: { id: `e:${nodeId}>${callId}`, source: nodeId, target: callId, kind: kind === 'agent' ? 'spawn' : 'call', tokens } });
