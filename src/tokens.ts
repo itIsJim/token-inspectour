@@ -239,10 +239,28 @@ export class TokenCounter {
     if (b == null || t == null) return null;
     return Math.max(0, t - b + 1);
   }
+
+  // A thinking block from an earlier assistant turn. Claude Code sends the text empty and keeps
+  // only the encrypted signature, which still costs input tokens when the request keeps thinking
+  // (context_management keep:"all"). Counted in place, with the request's own thinking settings,
+  // as the difference against the same turn without the block.
+  async countThinkingBlock(model: string, block: ContentBlock, settings: { thinking?: unknown; context_management?: unknown } = {}): Promise<number | null> {
+    const req = (content: ContentBlock[]) => ({
+      model, ...settings,
+      messages: [{ role: 'user', content: '.' }, { role: 'assistant', content }, { role: 'user', content: '.' }],
+    });
+    const dot: ContentBlock = { type: 'text', text: '.' };
+    const [b, t] = await Promise.all([this.count(req([dot])), this.count(req([stripCache(block) as ContentBlock, dot]))]);
+    if (b == null || t == null) return null;
+    return Math.max(0, t - b);
+  }
 }
 
+// Local fallback for an encrypted thinking signature (base64, roughly 3.3 chars per token).
+export const estimateSignatureTokens = (signatureChars: number): number => Math.round(signatureChars / 3.3);
+
 /** The public surface the analyzer needs; lets tests substitute a fake counter. */
-export type Counter = Pick<TokenCounter, 'ready' | 'countSystemBlocks' | 'countTools' | 'toolFraming' | 'countTool' | 'countText' | 'countMessageBlock'>;
+export type Counter = Pick<TokenCounter, 'ready' | 'countSystemBlocks' | 'countTools' | 'toolFraming' | 'countTool' | 'countText' | 'countMessageBlock' | 'countThinkingBlock'>;
 
 export function stripCache<T extends object>(o: T): Omit<T, 'cache_control'> {
   if (!o || typeof o !== 'object') return o;

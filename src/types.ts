@@ -239,6 +239,8 @@ export interface Part {
   sourceId?: string;
   toolUseId?: string;
   isError?: boolean;
+  /** Length of an encrypted thinking signature (thinking parts whose text is not sent). */
+  signatureChars?: number;
   raw?: unknown;
   tokens?: number;
   exact?: boolean;

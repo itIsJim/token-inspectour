@@ -117,6 +117,7 @@ test('exact counting uses the counter and distributes tokens to spans', async ()
     async countTool() { return 50; },
     async countText(_m, text) { return Math.ceil(text.length / 4); },
     async countMessageBlock(_m, _r, block) { return Math.ceil(((block as { text?: string }).text || '').length / 4); },
+    async countThinkingBlock() { return 0; },
   };
   const { parts } = buildParts(body, inventory);
   const counted = await countParts(parts, body, fakeCounter, {});
@@ -126,6 +127,36 @@ test('exact counting uses the counter and distributes tokens to spans', async ()
   const reminderPart = parts.find((p) => p.id === 'msg.0.0')!;
   const sum = reminderPart.spans.reduce((a, s) => a + (s.tokens || 0), 0);
   assert.ok(Math.abs(sum - reminderPart.tokens!) <= reminderPart.spans.length);
+});
+
+test('thinking blocks sent as signature only are counted, not reported as empty', async () => {
+  const b: RequestBody = {
+    model: 'm', thinking: { type: 'adaptive' }, context_management: { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] },
+    messages: [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 'x'.repeat(3300) }, { type: 'text', text: 'ok' }] },
+      { role: 'user', content: 'next' },
+    ],
+  };
+  const { parts } = buildParts(b, inventory);
+  const th = parts.find((p) => p.id === 'msg.1.0')!;
+  assert.equal(th.signatureChars, 3300);
+  assert.equal(th.label, 'model thinking (encrypted signature only)');
+  await countParts(parts, b, null, {});
+  assert.equal(th.tokens, 1000); // local estimate from the signature
+  assert.equal(th.exact, false);
+
+  let seen: unknown;
+  const counter: Counter = {
+    ready: true,
+    async countSystemBlocks() { return 0; }, async countTools() { return 0; }, async toolFraming() { return 0; }, async countTool() { return 0; },
+    async countText(_m, text) { return text.length; }, async countMessageBlock(_m, _r, block) { return ((block as { text?: string }).text || '').length; },
+    async countThinkingBlock(_m, _block, settings) { seen = settings; return 777; },
+  };
+  const { parts: p2 } = buildParts(b, inventory);
+  await countParts(p2, b, counter, {});
+  assert.equal(p2.find((p) => p.id === 'msg.1.0')!.tokens, 777);
+  assert.deepEqual(seen, { thinking: b.thinking, context_management: b.context_management });
 });
 
 test('detects the project directory from the environment reminder or the CLAUDE.md chain', () => {

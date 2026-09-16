@@ -3,7 +3,7 @@
 // the inventory source (CLAUDE.md, skill, command, agent, MCP, memory, harness…) that
 // produced them. Token counts are exact when the counter is available, estimated otherwise.
 import path from 'node:path';
-import { estimateTokens } from './tokens.js';
+import { estimateTokens, estimateSignatureTokens } from './tokens.js';
 import type { Counter } from './tokens.js';
 import { sanitizeMcp, KINDS } from './inventory.js';
 import { sha } from './util.js';
@@ -413,7 +413,9 @@ export function buildParts(body: RequestBody, inventory: Inventory): { parts: Pa
         name: tu.name || (call ? call.name : undefined),
         toolUseId: (b as ToolResultBlock).tool_use_id || tu.id,
         isError: (b as ToolResultBlock).is_error || false,
-        label: defaultLabel, text, chars: text.length, spans,
+        label: bt === 'thinking' && !text && (b as { signature?: string }).signature ? 'model thinking (encrypted signature only)' : defaultLabel,
+        text, chars: text.length, spans,
+        signatureChars: bt === 'thinking' ? ((b as { signature?: string }).signature || '').length || undefined : undefined,
         raw: bt === 'text' || bt === 'thinking' ? undefined : b,
       });
     });
@@ -445,7 +447,7 @@ export async function countParts(parts: Part[], body: RequestBody, counter: Coun
       p.exact = true;
       counted++;
     } else {
-      p.tokens = estimateTokens(p.text);
+      p.tokens = estimateTokens(p.text) + (p.signatureChars ? estimateSignatureTokens(p.signatureChars) : 0);
       p.exact = false;
     }
   };
@@ -458,7 +460,11 @@ export async function countParts(parts: Part[], body: RequestBody, counter: Coun
       const msg = body.messages![p.index];
       const block = messageBlocks(msg)[p.sub!];
       const role = msg.role === 'assistant' ? 'assistant' : 'user';
-      const structural = msg.role === 'system' || ['tool_result', 'tool_use', 'thinking', 'redacted_thinking', 'image', 'document'].includes(block.type);
+      if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+        jobs.push(counter.countThinkingBlock(model, block, { thinking: body.thinking, context_management: body.context_management }).then((n) => setTokens(p, n)));
+        continue;
+      }
+      const structural = msg.role === 'system' || ['tool_result', 'tool_use', 'image', 'document'].includes(block.type);
       jobs.push(structural
         ? counter.countText(model, p.text).then((n) => setTokens(p, n))
         : counter.countMessageBlock(model, role, block).then((n) => setTokens(p, n)));
