@@ -18,7 +18,6 @@ export const short = (p: string | null | undefined): string => (p || '').replace
 export const basename = (p: string | null | undefined): string => (p || '').split('/').pop() || '';
 
 export const cssVar = (n: string): string => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-export const isDark = (): boolean => matchMedia('(prefers-color-scheme: dark)').matches;
 
 export async function api<T>(p: string, opt?: RequestInit): Promise<T> {
   const r = await fetch(BASE + p, opt);

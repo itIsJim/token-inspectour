@@ -1,4 +1,4 @@
-// Build flow-graph data (nodes + edges for Cytoscape) from captured requests.
+// Build flow-graph data (nodes + edges for the d3 flow graph and Sankey) from captured requests.
 //
 //  flow    — one session: agent turns in order, the tool calls each turn made (built-in,
 //            MCP, skills, subagent spawns), side calls, with token weights on every edge.

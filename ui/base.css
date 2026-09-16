@@ -255,6 +255,38 @@ input.search:focus{outline:2px solid var(--ring);outline-offset:1px}
 .heat-key .markk{display:inline-block;width:10px;height:10px;background:#e11d4833;border-radius:2px}
 .heat-key .selk{display:inline-block;width:10px;height:10px;border:1.5px solid var(--hl);border-radius:2px}
 
+/* ---- session flow graph (graph page, flow.ts) ------------------------------ */
+:root{--flow-edge:#a1a1aa}
+@media (prefers-color-scheme:dark){:root{--flow-edge:#52525b}}
+svg.flow text{font-family:var(--sans)}
+.fnode{cursor:pointer;transition:opacity .15s}
+.fnode rect.body{fill:color-mix(in srgb,var(--c) 7%,var(--card));stroke:color-mix(in srgb,var(--c) 55%,var(--border));stroke-width:1.2;transition:stroke-width .12s,filter .12s}
+.fnode.turn rect.body{fill:color-mix(in srgb,var(--c) 11%,var(--card));stroke:var(--c);stroke-width:1.8;filter:drop-shadow(0 1px 2px rgb(0 0 0 / .08))}
+.fnode.k-side rect.body{fill:var(--card);stroke-dasharray:4 3}
+.fnode:hover rect.body{stroke-width:2.4}
+.fnode.sel rect.body{stroke:var(--hl);stroke-width:3;filter:drop-shadow(0 0 0 var(--hl)) drop-shadow(0 4px 12px color-mix(in srgb,var(--hl) 35%,transparent))}
+.fnode text{font-size:11px;fill:var(--muted-foreground);pointer-events:none}
+.fnode text.t{font-size:12px;font-weight:600;fill:var(--foreground)}
+.fnode.turn text.t{font-size:13px}
+.fnode text.n{font-family:var(--mono);font-size:10.5px;fill:var(--foreground)}
+.fnode.k-side text{font-size:10.5px}
+.fnode.dim,.fedge.dim,.flabel.dim{opacity:.14}
+.fgroup rect{fill:color-mix(in srgb,var(--muted-foreground) 5%,transparent);stroke:var(--border);stroke-dasharray:5 4}
+.fgroup text{font-size:9.5px;font-weight:600;letter-spacing:.06em;fill:var(--muted-foreground)}
+.fedge{stroke:var(--flow-edge);stroke-opacity:.85;stroke-linecap:round;transition:opacity .15s,stroke .15s}
+.fedge.next{stroke:var(--hl)}
+.fedge.result{stroke-dasharray:2 5}
+.fedge.spawn{stroke:#0891b2}
+.fedge.side{stroke-dasharray:4 4;stroke-opacity:.6}
+.fedge.hl{stroke:var(--hl);stroke-opacity:1}
+.flabel rect{fill:var(--card);stroke:var(--border)}
+.flabel.next rect{stroke:color-mix(in srgb,var(--hl) 45%,var(--border))}
+.flabel text{font-family:var(--mono);font-size:10px;fill:var(--muted-foreground)}
+.flabel.next text{fill:var(--hl);font-weight:500}
+.glegend .k.line{width:18px;height:0;border-top:2px solid var(--flow-edge);border-radius:0;vertical-align:3px}
+.glegend .k.line.hl{border-top-color:var(--hl)}
+.glegend .k.line.dash{border-top-style:dashed}
+
 /* ---- tooltip (shared) --------------------------------------------------- */
 .tip{position:fixed;pointer-events:none;background:var(--popover);color:var(--foreground);border:1px solid var(--border);box-shadow:var(--shadow-lg);padding:7px 10px;border-radius:8px;font-size:11.5px;z-index:50;max-width:420px;display:none;line-height:1.5}
 .tip b{font-weight:600}
