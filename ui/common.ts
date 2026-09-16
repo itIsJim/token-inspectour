@@ -31,8 +31,26 @@ export const KINDS: { kinds: Kinds } = { kinds: {} };
 export const kindColor = (k: string): string => KINDS.kinds[k]?.color || '#94a3b8';
 export const kindLabel = (k: string): string => KINDS.kinds[k]?.label || k;
 
-// Source viewer in the right-hand panel. `matchedText`, when given, is highlighted and scrolled to.
-export async function renderSourcePanel(id: string, fallback: PublicSource | undefined, matchedText?: string): Promise<void> {
+// Floating tooltip (#tip). Pass html=null to only move it.
+export function showTip(html: string | null, ev: MouseEvent): void {
+  const tip = document.getElementById('tip');
+  if (!tip) return;
+  if (html != null) {
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+  }
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - r.width - 12, ev.clientX + 14)) + 'px';
+  tip.style.top = (ev.clientY + 16 + r.height > window.innerHeight ? ev.clientY - r.height - 12 : ev.clientY + 16) + 'px';
+}
+export function hideTip(): void {
+  const tip = document.getElementById('tip');
+  if (tip) tip.style.display = 'none';
+}
+
+// Source viewer in the right-hand panel. `matchedText`, when given, is highlighted and scrolled to;
+// `back`, when given, adds a button that returns to whatever the panel showed before.
+export async function renderSourcePanel(id: string, fallback: PublicSource | undefined, matchedText?: string, back?: () => void): Promise<void> {
   const side = $('#side');
   $('#main').classList.add('with-side');
   side.innerHTML = '<div class="hd"><span class="t">loading…</span></div>';
@@ -52,8 +70,9 @@ export async function renderSourcePanel(id: string, fallback: PublicSource | und
     }
   }
   const fm = s.frontmatter && Object.keys(s.frontmatter).length ? `<div class="meta">frontmatter: ${esc(JSON.stringify(s.frontmatter))}</div>` : '';
-  side.innerHTML = `<div class="hd"><span class="k" style="background:${kindColor(s.kind)}"></span><span class="t" title="${esc(s.path)}">${esc(s.name)}</span><span class="pill">${esc(kindLabel(s.kind))}</span><span class="pill">${esc(s.scope || '')}</span><button data-act="close">✕</button></div>
+  side.innerHTML = `<div class="hd">${back ? '<button class="ghost icon" data-act="back" title="back">←</button>' : ''}<span class="k" style="background:${kindColor(s.kind)}"></span><span class="t" title="${esc(s.path)}">${esc(s.name)}</span><span class="pill">${esc(kindLabel(s.kind))}</span><span class="pill">${esc(s.scope || '')}</span><button class="ghost icon" data-act="close">✕</button></div>
     <div class="meta">${esc(s.path || '')} · ${fmt(s.size)} chars${s.mtime ? ` · modified ${new Date(s.mtime).toLocaleString()}` : ''}</div>${fm}<div class="txt">${content}</div>`;
   $<HTMLButtonElement>('[data-act=close]', side).onclick = () => $('#main').classList.remove('with-side');
+  if (back) $<HTMLButtonElement>('[data-act=back]', side).onclick = back;
   if (matchedText) $('mark', side)?.scrollIntoView({ block: 'center' });
 }

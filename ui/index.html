@@ -11,23 +11,24 @@
 <body>
 <div id="app">
   <header>
-    <h1>token-inspectour <span class="pill" id="h-name" title="agent name (route prefix)">…</span></h1>
+    <h1><span class="logo">ti</span>token-inspectour <span class="pill" id="h-name" title="agent name (route prefix)">…</span></h1>
     <span class="kv">project <b id="h-project">…</b></span>
     <span class="kv">proxy <span class="cmd" id="h-cmd">…</span></span>
     <span class="grow"></span>
-    <a id="b-graph" class="btn" href="graph" title="Open the flow-graph of the selected session in its own page">graph</a>
     <span id="h-counter" class="pill">counter</span>
     <span id="h-inv" class="pill">inventory</span>
+    <a id="b-graph" class="btn" href="graph" title="Open the flow-graph of the selected session in its own page">flow-graph ↗</a>
     <button id="b-rescan" title="Rescan CLAUDE.md / skills / agents / settings">rescan</button>
-    <button id="b-clear" title="Delete all captured sessions">clear</button>
+    <button id="b-clear" class="ghost" title="Delete all captured sessions">clear</button>
   </header>
   <div id="main">
     <div id="left"><div class="empty">Waiting for the first request…<br><br>Run <span class="cmd" id="l-cmd"></span></div></div>
-    <div id="center"><div class="empty">Select a step on the left.</div></div>
+    <div id="center"><div class="empty">Select a step on the left.<br><span class="small">Keys: <kbd>j</kbd> / <kbd>k</kbd> next / previous step · <kbd>Esc</kbd> close the details panel</span></div></div>
     <div id="side"></div>
   </div>
 </div>
 <div class="tip" id="tip"></div>
+<script src="vendor/d3.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

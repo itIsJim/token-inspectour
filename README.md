@@ -16,7 +16,7 @@ token-inspectour is a local proxy with a browser UI. It sits between Claude Code
                                       └──────────────────┘
 ```
 
-Written in TypeScript with no runtime dependencies beyond two vendored MIT graph libraries. Two HTML pages (inspector and flow-graph), a few hundred lines of Node.
+Written in TypeScript with no runtime dependencies beyond a few vendored chart and graph libraries (d3, Cytoscape.js, dagre). Two HTML pages (inspector and flow-graph), a few hundred lines of Node.
 
 ## Why
 
@@ -84,27 +84,30 @@ The path segment after the port names the agent. The proxy strips it before forw
 
 ## What you see
 
-**Anatomy.** The request split into its three areas, with a stacked bar of tokens by source kind.
+**Anatomy.** Stat tiles compare the server's prompt total with the sum of attributed parts and the cache split. A donut and a stacked bar show tokens by request area and by source kind. Below them, the *request map* is a zoomable d3 icicle of the whole request body: `system`, `tools` (grouped into built-in tools and MCP servers), `messages` (one cell per message, then one per content block), and whatever the parts do not account for. Click a cell to zoom in and open it in the details panel. The same structure is listed in accordions:
 
+- *Request envelope*: the fields around the three areas (`model`, `max_tokens`, `thinking`, `context_management`, `output_config`, `metadata`), shown as JSON.
 - *System prompt*: the billing header, the Agent SDK preamble, and the harness prompt with its cache breakpoint.
 - *Tools*: every tool definition, grouped into built-in tools and MCP servers, plus the tool-use framing the API adds once per request.
-- *Messages*: every content block, with `<system-reminder>` blocks opened up. Inside them, each `Contents of <file>` section is attributed to that file, and the skill, agent, and MCP-instruction listings are attributed line by line. Tool results are attributed to the file a `Read` fetched or the skill a `Skill` call invoked.
+- *Messages*: one row per message with its role, block types, and token share, expanding into its content blocks. `<system-reminder>` blocks are opened up: each `Contents of <file>` section is attributed to that file, and the skill, agent, and MCP-instruction listings are attributed line by line. Tool results are attributed to the file a `Read` fetched or the skill a `Skill` call invoked. A *relation map* accordion draws the turn as a force-directed graph: messages on a timeline (assistant above, user below), tool hubs above them, call and result edges weighted by tokens.
 
-Expand any part to read its text with each span tinted by kind. Hover a span for its token count. Click a span to open the source file beside it with the matched region highlighted.
+Selecting any part opens the details panel with its JSON path (`messages[12].content[1]`), exact or estimated tokens, the matching tool call or result, the tool definition it used, its attribution spans, and its content, either verbatim with each span tinted by kind or as syntax-highlighted, collapsible JSON taken from the captured body. Click a span to open the source file with the matched region highlighted.
 
-**Sources.** The full inventory found for the session's project: which files are sent, how many tokens each costs in this request, how much of the file arrived verbatim, and which steps of the session include it. Unused files are listed too, so a skill that never gets pulled in stands out.
+**Sources.** A force-directed tree of the session's project inventory (project → scope → kind → file), with coloured flow edges from each file and each built-in producer into the request areas, weighted by tokens. Below it, a filterable table of the full inventory: which files are sent, how many tokens each costs in this request, how much of the file arrived verbatim, and which steps of the session include it. Unused files are listed too, so a skill that never gets pulled in stands out.
 
 **Diff.** The change from the previous agent turn: added, removed, and changed parts with token deltas, beside the server's own cache-read, cache-write, and uncached numbers.
 
-**Response.** The assembled streamed reply (text, thinking, tool calls), usage, stop reason, and timing.
+**Response.** The assembled streamed reply (text, thinking, tool calls with their input as JSON), usage, stop reason, and timing.
 
-**Raw.** Headers and bodies as captured, with credentials redacted.
+**Raw.** Headers and bodies as captured, with credentials redacted, in a lazy JSON viewer that handles multi-megabyte bodies. Jump to any path, expand to a depth, or copy.
 
-**Flow-graph.** The `graph` button in the header opens a separate page, `/<agent>/graph`, with an interactive diagram of the selected session, drawn with Cytoscape.js and laid out with dagre. The page has its own session picker and stays in sync with the inspector through the URL (`?session=…&request=…`), so it can live in a second tab or window while you keep inspecting. Agent turns run left to right (or top to bottom), each turn fans out into the tool calls it made, grouped by MCP server where relevant, with the result flowing back into the next turn. Edge width follows tokens, the turn-to-turn edge carries the tokens added by that step, and subagent spawns and side calls (session titling, compaction) are drawn in their own styles. A second mode, *turn context*, shows one request as a flow from sources (CLAUDE.md files, skills, memory, harness, tools) into the system, tools, and messages areas and on into the request, so you can see at a glance what the context is made of. Hover highlights the neighbourhood, click opens the details panel (with a link back to that step in the inspector), and the graph updates live as new calls arrive. The two library files are vendored under `ui/vendor/` with their MIT licenses; nothing is fetched from a CDN.
+**Flow-graph.** The `graph` button in the header opens a separate page, `/<agent>/graph`, with an interactive diagram of the selected session, drawn with Cytoscape.js and laid out with dagre. The page has its own session picker and stays in sync with the inspector through the URL (`?session=…&request=…`), so it can live in a second tab or window while you keep inspecting. Agent turns run left to right (or top to bottom), each turn fans out into the tool calls it made, grouped by MCP server where relevant, with the result flowing back into the next turn. Edge width follows tokens, the turn-to-turn edge carries the tokens added by that step, and subagent spawns and side calls (session titling, compaction) are drawn in their own styles. A second mode, *turn context*, shows one request as a flow from sources (CLAUDE.md files, skills, memory, harness, tools) into the system, tools, and messages areas and on into the request, so you can see at a glance what the context is made of. Hover highlights the neighbourhood, click opens the details panel (with a link back to that step in the inspector), and the graph updates live as new calls arrive. The library files are vendored under `ui/vendor/` with their licenses; nothing is fetched from a CDN.
 
 ## Token counts
 
 Counts are exact, not estimated. After the first captured request, the inspector reuses that session's own auth headers to call `/v1/messages/count_tokens` for each part. Results are cached by content hash, so a second turn only counts what changed. Parts that could not be counted fall back to a local estimate and are marked with `≈`.
+
+Thinking blocks from earlier turns usually arrive with empty text and only an encrypted signature, which still costs input tokens. Those are counted in place with the request's own `thinking` and `context_management` settings (estimated from the signature length when counting is unavailable), so they no longer show up as unattributed.
 
 Per-tool numbers are marginal costs. The API adds a fixed wrapper around any tool list; that wrapper is shown as its own part so the sum of parts matches the server's reported prompt total. On real runs the two agree to within about 0.05%. The remaining difference is shown as "unattributed" rather than hidden.
 
@@ -162,17 +165,17 @@ Captures are written to `~/.token-inspectour/captures/<session>/`, one JSON file
 
 - Tested with Claude Code 2.1.x on macOS with both OAuth and API-key sessions. The attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, some spans will fall back to `harness` or `reminder` until the regexes in `src/analyze.ts` are updated.
 - Claude Code must honour `ANTHROPIC_BASE_URL`, which it does in every mode we tried. Third-party gateways that Claude Code is already pointed at can be chained with `--upstream`.
-- The UI is two dependency-free pages (`ui/index.html` and `ui/graph.html` plus their compiled scripts); it has been exercised against real sessions but not across many browsers.
+- The UI is two framework-free pages (`ui/index.html` and `ui/graph.html` plus their compiled scripts and vendored libraries); it has been exercised against real sessions but not across many browsers.
 
 ## Development
 
 ```sh
-npm run build       # tsc → dist/ (backend, tests) and dist/ui/app.js (browser)
+npm run build       # tsc → dist/ (backend, tests) and dist/ui/*.js (browser)
 npm test            # build, then node --test dist/test/
 npm run typecheck   # strict type check without emitting
 ```
 
-The code is strict TypeScript compiled to ES modules on `node:http`; the only dev dependency is the TypeScript compiler. `src/types.ts` holds the shared data model (requests, sources, parts, spans, analyses, summaries) that the backend and the browser UI both compile against. `src/proxy.ts` captures, `src/sse.ts` assembles streams, `src/inventory.ts` scans, `src/analyze.ts` attributes and counts, `src/tokens.ts` talks to count_tokens, `src/store.ts` persists, `src/server.ts` serves the UI and JSON API, `src/graph.ts` builds the flow-graph data, `src/cli.ts` wires it together. The UI is `ui/index.html` plus `ui/app.ts` (inspector), `ui/graph.html` plus `ui/graph.ts` (flow-graph page), `ui/common.ts` (shared helpers) and `ui/base.css` (shared styles); `ui/vendor/` holds Cytoscape.js, dagre, and cytoscape-dagre (all MIT), loaded only by the graph page.
+The code is strict TypeScript compiled to ES modules on `node:http`; the dev dependencies are the TypeScript compiler and type packages. `src/types.ts` holds the shared data model (requests, sources, parts, spans, analyses, summaries) that the backend and the browser UI both compile against. `src/proxy.ts` captures, `src/sse.ts` assembles streams, `src/inventory.ts` scans, `src/analyze.ts` attributes and counts, `src/tokens.ts` talks to count_tokens, `src/store.ts` persists, `src/server.ts` serves the UI and JSON API, `src/graph.ts` builds the flow-graph data, `src/cli.ts` wires it together. The UI is `ui/index.html` plus `ui/app.ts` (inspector), `ui/charts.ts` (d3 charts) and `ui/json.ts` (JSON viewer), `ui/graph.html` plus `ui/graph.ts` (flow-graph page), `ui/common.ts` (shared helpers) and `ui/base.css` (shared styles); `ui/vendor/` holds d3 (ISC), loaded by the inspector, and Cytoscape.js, dagre, and cytoscape-dagre (all MIT), loaded by the graph page.
 
 Issues and pull requests are welcome. If you hit a request shape that is not attributed correctly, an anonymised capture (delete the message text, keep the structure) makes it easy to fix.
 

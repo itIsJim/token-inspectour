@@ -82,7 +82,7 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }: { port: number;
       const page = (name: string) => file(res, UI_DIR, name, 'text/html; charset=utf-8', (s) => s.replace('__INSPECTOUR_BASE__', base).replace('__INSPECTOUR_NAME__', ctx.name));
       if (req.method === 'GET' && (p === '/' || p === '/index.html')) return page('index.html');
       if (req.method === 'GET' && (p === '/graph' || p === '/graph.html')) return page('graph.html');
-      if (req.method === 'GET' && (p === '/app.js' || p === '/graph.js' || p === '/common.js')) return file(res, UI_BUILD, p.slice(1), 'text/javascript; charset=utf-8');
+      if (req.method === 'GET' && /^\/[a-z]+\.js$/.test(p) && fs.existsSync(path.join(UI_BUILD, p.slice(1)))) return file(res, UI_BUILD, p.slice(1), 'text/javascript; charset=utf-8');
       if (req.method === 'GET' && p === '/base.css') return file(res, UI_DIR, 'base.css', 'text/css; charset=utf-8');
       let vm: RegExpExecArray | null;
       if (req.method === 'GET' && (vm = /^\/vendor\/([A-Za-z0-9._-]+\.js)$/.exec(p))) return file(res, path.join(UI_DIR, 'vendor'), vm[1], 'text/javascript; charset=utf-8');
