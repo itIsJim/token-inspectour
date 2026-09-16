@@ -38,6 +38,7 @@ button:hover,a.btn:hover{background:var(--muted-bg);text-decoration:none}
 button:focus-visible,a.btn:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
 button.primary,a.btn.primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary)}
 button.primary:hover,a.btn.primary:hover{opacity:.9}
+button:disabled{opacity:.45;cursor:default;pointer-events:none}
 button.ghost{background:transparent;border-color:transparent;box-shadow:none}
 button.ghost:hover{background:var(--muted-bg)}
 button.icon{padding:4px 7px}
@@ -230,17 +231,29 @@ input.search:focus{outline:2px solid var(--ring);outline-offset:1px}
 .chart .cell:hover rect{filter:brightness(1.08)}
 .chart .cell text{font-size:10.5px;pointer-events:none;fill:#fff;font-weight:500}
 .chart .cell text.dark{fill:#0b0b0e}
-.chart .ctrl{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:2}
-.chart.graph{height:460px;border:1px solid var(--border);border-radius:8px;background:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--muted-foreground) 22%,transparent) 1px,transparent 0) 0 0/18px 18px,var(--bg);overflow:hidden}
-.chart.graph.tall{height:620px}
-.chart.graph svg{height:100%;cursor:grab}
-.chart.graph svg:active{cursor:grabbing}
 .chart .node{cursor:pointer}
-.chart .node circle{stroke:var(--card);stroke-width:1.5;transition:opacity .15s}
 .chart .node text{font-size:10.5px;paint-order:stroke;stroke:var(--bg);stroke-width:3px;stroke-linejoin:round;pointer-events:none}
 .chart .link{fill:none;stroke-linecap:round;transition:opacity .15s}
 .chart .dim{opacity:.1}
-.chart .glegend{position:absolute;left:10px;bottom:8px;display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;padding:5px 10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb,var(--card) 88%,transparent);backdrop-filter:blur(6px);max-width:calc(100% - 20px);pointer-events:none}
+
+.chart text.lbl{font-size:11px;fill:var(--foreground);paint-order:stroke;stroke:var(--card);stroke-width:3px;stroke-linejoin:round}
+.chart text.muted-t{fill:var(--muted-foreground);font-size:10.5px}
+.arc-bar{margin-bottom:6px;gap:6px 10px}
+.select{font:inherit;font-size:12px;color:var(--foreground);background:var(--card);border:1px solid var(--input);border-radius:calc(var(--radius) - 3px);padding:3px 8px}
+.chipk{display:inline-flex;align-items:center;gap:2px;font-size:11.5px;padding:2px 8px;border:1px solid var(--border);border-radius:999px;cursor:default;white-space:nowrap}
+.chipk:hover{background:var(--muted-bg)}
+.heat{display:grid;grid-template-columns:minmax(120px,220px) minmax(0,1fr);gap:0 10px}
+.heat-rows{min-width:0}
+.heat-row{height:18px;line-height:18px;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.heat-row.axis-pad{height:22px}
+.heat-scroll{overflow-x:auto;min-width:0}
+.heat-scroll canvas{display:block;cursor:pointer}
+.heat-axis{display:block}
+.heat-key{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.heat-key .ramp{display:inline-block;width:90px;height:8px;border-radius:99px}
+.heat-key .sep{width:1px;height:12px;background:var(--border)}
+.heat-key .markk{display:inline-block;width:10px;height:10px;background:#e11d4833;border-radius:2px}
+.heat-key .selk{display:inline-block;width:10px;height:10px;border:1.5px solid var(--hl);border-radius:2px}
 
 /* ---- tooltip (shared) --------------------------------------------------- */
 .tip{position:fixed;pointer-events:none;background:var(--popover);color:var(--foreground);border:1px solid var(--border);box-shadow:var(--shadow-lg);padding:7px 10px;border-radius:8px;font-size:11.5px;z-index:50;max-width:420px;display:none;line-height:1.5}

@@ -20,6 +20,8 @@
 .gbar .seg button:last-child{border-radius:0 6px 6px 0}
 .gbar .seg button.on{background:var(--soft);border-color:var(--accent);color:var(--accent);font-weight:600;position:relative;z-index:1}
 #cy{flex:1;min-height:0}
+#sankey{flex:1;min-height:0;overflow:auto;padding:24px 20px 60px}
+#sankey[hidden],#cy[hidden]{display:none}
 .glegend{position:absolute;left:14px;bottom:12px;display:flex;flex-wrap:wrap;gap:4px 12px;max-width:70%;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(6px);font-size:11px;pointer-events:none}
 .glegend:empty{display:none}
 #graph .empty{position:absolute;inset:44px 0 0 0;display:flex;align-items:center;justify-content:center;pointer-events:none}
@@ -44,7 +46,7 @@
       <div class="gbar">
         <select id="sel-session" title="session to draw"><option value="">loading…</option></select>
         <select id="sel-request" title="request to draw (turn context mode)" hidden></select>
-        <span class="seg"><button data-gmode="flow" class="on" title="Turns, tool calls, MCP, subagents and side calls of the selected session">session flow</button><button data-gmode="context" title="Which sources feed which part of the selected request">turn context</button></span>
+        <span class="seg"><button data-gmode="flow" class="on" title="Turns, tool calls, MCP, subagents and side calls of the selected session">session flow</button><button data-gmode="context" title="Sankey of the sources that feed each area of the selected request">turn context</button></span>
         <span class="seg"><button data-gdir="LR" class="on" title="left to right">→</button><button data-gdir="TB" title="top to bottom">↓</button></span>
         <button data-gact="fit" title="fit to view">fit</button>
         <button data-gact="relayout" title="run the layout again">relayout</button>
@@ -52,6 +54,7 @@
         <span id="gstats" class="small muted"></span>
       </div>
       <div id="cy"></div>
+      <div id="sankey" class="chart" hidden></div>
       <div id="glegend" class="glegend"></div>
       <div id="gempty" class="empty">Loading…</div>
     </div>
@@ -59,6 +62,8 @@
   </div>
 </div>
 <div class="tip" id="tip"></div>
+<script src="vendor/d3.min.js"></script>
+<script src="vendor/d3-sankey.min.js"></script>
 <script src="vendor/dagre.min.js"></script>
 <script src="vendor/cytoscape.min.js"></script>
 <script src="vendor/cytoscape-dagre.js"></script>

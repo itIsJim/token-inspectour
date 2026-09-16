@@ -6,8 +6,8 @@ import type { Analysis, DiffEntry, Part, PublicSource, RequestSummary, SessionSu
 import { $, $$, BASE, NAME, api, basename, esc, fmt, fmtKk, hideTip, KINDS, kindColor, kindLabel, pct, renderSourcePanel, short, showTip } from './common.js';
 import type { Kinds } from './common.js';
 import { atPath, expandAll, jsonView } from './json.js';
-import { donut, forceGraph, icicle, stackBar, stepColumns } from './charts.js';
-import type { GLink, GNode, IcicleHandle, MapNode, Slice } from './charts.js';
+import { arcDiagram, collapsibleTree, donut, icicle, presenceHeatmap, sankeyChart, sessionTimeline, stackBar } from './charts.js';
+import type { Arc, ArcGroup, ArcNode, HeatCol, HeatRow, IcicleHandle, MapNode, SLink, SNode, Slice, TLSide, TLStep, TreeNode } from './charts.js';
 
 type UiSource = PublicSource | AdhocSource;
 
@@ -50,7 +50,7 @@ interface RawRequest {
   responseHeaders: unknown;
 }
 
-type Tab = 'anatomy' | 'sources' | 'diff' | 'response' | 'raw';
+type Tab = 'anatomy' | 'sources' | 'session' | 'diff' | 'response' | 'raw';
 
 const S = {
   state: null as State | null,
@@ -69,6 +69,7 @@ const S = {
   showUnused: true,
   sourceFilter: '',
   icicle: null as IcicleHandle | null,
+  tlModel: '', // session timeline model filter
 };
 
 const recSources = (): PublicSource[] => S.rec?.inventory?.sources || S.sources;
@@ -245,7 +246,7 @@ function renderCenter(keepScroll = false): void {
   if (!rec) return;
   const c = $('#center');
   const scroll = keepScroll ? c.scrollTop : 0;
-  const tabs: Tab[] = ['anatomy', 'sources', 'diff', 'response', 'raw'];
+  const tabs: Tab[] = ['anatomy', 'sources', 'session', 'diff', 'response', 'raw'];
   c.innerHTML = `<div class="tabs"><div class="tablist" role="tablist">${tabs.map((t) => `<button role="tab" class="${S.tab === t ? 'on' : ''}" data-tab="${t}">${t}</button>`).join('')}</div>
     <span class="grow"></span><span class="meta">#${rec.seq} · ${esc(rec.kind)} · ${esc(rec.model || '')} · ${rec.durationMs ? fmt(rec.durationMs) + ' ms' : 'in flight'}${rec.ttftMs ? ` · first token ${fmt(rec.ttftMs)} ms` : ''}</span>
     <button data-act="recount" title="Re-run exact token counting for this request">recount</button></div><div class="view" id="view"></div>`;
@@ -268,6 +269,13 @@ function renderCenter(keepScroll = false): void {
   switch (S.tab) {
     case 'anatomy': renderAnatomy(v, rec, a); break;
     case 'sources': renderSources(v, rec, a); break;
+    case 'session': {
+      const sess = S.sessions.find((x) => x.id === rec.sessionId);
+      if (!sess) break;
+      v.innerHTML = '<div class="card"><div class="empty">loading the session\'s steps…</div></div>';
+      void ensureSessionAnalyses().then(() => { if (S.tab === 'session' && S.rec === rec) renderSessionView(v, sess, rec.id); });
+      break;
+    }
     case 'diff': renderDiff(v, rec, a); break;
     case 'response': renderResponse(v, rec); break;
     case 'raw': void renderRaw(v, rec); break;
@@ -418,7 +426,8 @@ function renderAnatomy(v: HTMLElement, rec: FullRequest, a: Analysis): void {
   const byMsg = new Map<number, Part[]>();
   for (const p of msgs) byMsg.set(p.index, [...(byMsg.get(p.index) || []), p]);
   const called = new Set(msgs.filter((p) => p.blockType === 'tool_use').map((p) => p.name));
-  const relation = acc('rel', 'Relation map · messages ↔ tools', `${byMsg.size} messages · ${called.size} of ${tools.length} tools used`, '<div id="c-rel" class="chart graph"></div>', false, true);
+  const relation = acc('rel', 'Relation map · messages ↔ tools', `${byMsg.size} messages · ${called.size} of ${tools.length} tools used`, '<div id="c-rel" class="chart"></div>', false, true)
+    + acc('toolflow', 'Tool cost flow · calls → tools → results', `${called.size} tools · ${fmtKk(sumT(msgs.filter((p) => p.blockType === 'tool_result')))} result tokens`, '<div id="c-toolflow" class="chart"></div>', false, true);
   const msgList = [...byMsg.entries()].map(([i, ps]) => messageRow(i, ps, a)).join('');
   html += acc('messages', 'Messages', `${byMsg.size} messages · ${msgs.length} blocks · ${fmt(sumT(msgs))} tokens`, relation + `<div id="msglist">${msgList}</div>`, true);
 
@@ -431,6 +440,7 @@ function renderAnatomy(v: HTMLElement, rec: FullRequest, a: Analysis): void {
   wireAcc(v, {
     envelope: (el) => void renderEnvelope(el, rec),
     rel: (el) => drawRelation($('#c-rel', el), a),
+    toolflow: (el) => drawToolFlow($('#c-toolflow', el), a),
   });
   $$<HTMLDetailsElement>('details.msg', v).forEach((d) => {
     const fill = (): void => {
@@ -702,95 +712,126 @@ function wireSpans(el: HTMLElement, p: Part, back: () => void): void {
 
 // ---------------------------------------------------------------------------- relation map (messages ↔ tools)
 
+/** tool_use / tool_result pairs of one request, joined on tool_use_id. */
+function toolPairs(a: Analysis): Array<{ call: Part; result: Part | undefined }> {
+  const msgs = a.parts.filter((p) => p.area === 'messages');
+  const results = new Map(msgs.filter((p) => p.blockType === 'tool_result' && p.toolUseId).map((p) => [p.toolUseId!, p]));
+  return msgs.filter((p) => p.blockType === 'tool_use' && p.name).map((call) => ({ call, result: results.get(call.toolUseId || '') }));
+}
+
+const toolLabel = (name: string): string => name.replace(/^mcp__/, '').replace(/__/g, ' · ');
+
+// Arc diagram: messages in order on one axis with the tools that were called inserted beside them.
+// Calls arc above the axis (assistant message → tool), results arc below (tool → user message).
 function drawRelation(el: HTMLElement, a: Analysis): void {
   const msgs = a.parts.filter((p) => p.area === 'messages');
   const byMsg = new Map<number, Part[]>();
   for (const p of msgs) byMsg.set(p.index, [...(byMsg.get(p.index) || []), p]);
   const idx = [...byMsg.keys()].sort((x, y) => x - y);
-  const n = idx.length;
-  const maxMsg = Math.max(1, ...idx.map((i) => sumT(byMsg.get(i)!)));
-  const r = (t: number, max: number, lo: number, hi: number): number => lo + (hi - lo) * Math.sqrt(t / Math.max(1, max));
-  const nodes: GNode[] = [];
-  const links: GLink[] = [];
-  const toolDefs = new Map(a.parts.filter((p) => p.area === 'tools' && p.name).map((p) => [p.name!, p]));
-
-  // messages sit on a fixed timeline (assistant row above, user/system row below); tool hubs float above
-  const xAt = (k: number): number => (n > 1 ? 0.04 + (0.92 * k) / (n - 1) : 0.5);
-  idx.forEach((i, k) => {
-    const ps = byMsg.get(i)!;
-    const role = ps[0].role;
-    const t = sumT(ps);
-    const types = [...new Set(ps.map((p) => p.blockType))].join(' + ');
-    nodes.push({
-      id: `m:${i}`, label: `[${i}]`, color: ROLE_COLOR[role] || '#64748b', r: r(t, maxMsg, 3.5, 14),
-      ax: xAt(k), ay: role === 'assistant' ? 0.58 : 0.8, fixed: true,
-      labelAlways: n <= 40,
-      tip: `<b>messages[${i}] · ${esc(role)}</b><div class="muted small">${esc(types)}</div><div class="row"><span>tokens</span><span>${fmt(t)}</span></div><div class="row"><span>blocks</span><span>${ps.length}</span></div><div class="muted small">click to inspect</div>`,
-    });
-    if (k > 0) links.push({ source: `m:${idx[k - 1]}`, target: `m:${i}`, value: 0, width: 1, tree: true, color: 'var(--border)' });
-  });
-
-  // aggregate calls (assistant message → tool) and results (tool → user message)
-  const toolStats = new Map<string, { calls: number; inTok: number; outTok: number; firstK: number; msgs: number[] }>();
-  const agg = new Map<string, GLink & { count: number }>();
-  const add = (source: string, target: string, value: number, color: string, kind: string): void => {
-    const key = `${source}>${target}`;
-    const cur = agg.get(key) || { source, target, value: 0, color, count: 0, tip: kind };
-    cur.value += value;
-    cur.count++;
-    agg.set(key, cur);
-  };
-  const callById = new Map<string, Part>();
-  for (const p of msgs) if (p.blockType === 'tool_use' && p.toolUseId) callById.set(p.toolUseId, p);
-  for (const p of msgs) {
-    const k = idx.indexOf(p.index);
-    if (p.blockType === 'tool_use' && p.name) {
-      const st = toolStats.get(p.name) || { calls: 0, inTok: 0, outTok: 0, firstK: k, msgs: [] };
-      st.calls++;
-      st.inTok += p.tokens || 0;
-      st.msgs.push(k);
-      toolStats.set(p.name, st);
-      add(`m:${p.index}`, `t:${p.name}`, p.tokens || 0, kindColor('model'), 'call');
-    } else if (p.blockType === 'tool_result' && p.toolUseId) {
-      const call = callById.get(p.toolUseId);
-      if (!call?.name) continue;
-      const st = toolStats.get(call.name);
-      if (st) { st.outTok += p.tokens || 0; st.msgs.push(k); }
-      add(`t:${call.name}`, `m:${p.index}`, p.tokens || 0, p.isError ? '#dc2626' : kindColor('tool-result'), 'result');
-    }
-  }
-  const maxTool = Math.max(1, ...[...toolStats.values()].map((s) => s.inTok + s.outTok));
-  for (const [name, st] of toolStats) {
-    const def = toolDefs.get(name);
-    const kind = def?.kind || (name.startsWith('mcp__') ? 'mcp-remote' : 'harness-tool');
-    const mean = st.msgs.reduce((x, y) => x + y, 0) / st.msgs.length;
-    nodes.push({
-      id: `t:${name}`, label: name.replace(/^mcp__/, '').replace(/__/g, ' · '), color: kindColor(kind), r: r(st.inTok + st.outTok, maxTool, 6, 22), ring: true, labelAlways: true,
-      ax: xAt(mean), ay: 0.2,
-      tip: `<b>${esc(name)}</b><div class="muted small">${esc(kindLabel(kind))}</div><div class="row"><span>calls</span><span>${st.calls}</span></div><div class="row"><span>call input tokens</span><span>${fmt(st.inTok)}</span></div><div class="row"><span>result tokens</span><span>${fmt(st.outTok)}</span></div><div class="row"><span>definition tokens</span><span>${def ? fmt(def.tokens) : '–'}</span></div><div class="muted small">click to inspect the definition</div>`,
-    });
-  }
-  for (const l of agg.values()) {
-    l.tip = `<b>${l.tip === 'call' ? 'tool call' : 'tool result'}</b> ×${l.count}<div class="row"><span>tokens</span><span>${fmt(l.value)}</span></div>`;
-    links.push(l);
-  }
-  const defined = a.parts.filter((p) => p.area === 'tools' && p.blockType !== 'framing');
-  const unusedTok = sumT(defined.filter((p) => !toolStats.has(p.name || '')));
-  const legend = `<span><span class="k" style="background:${ROLE_COLOR.user}"></span>user</span><span><span class="k" style="background:${ROLE_COLOR.assistant}"></span>assistant</span><span><span class="k" style="border:2px solid var(--muted-foreground);background:none"></span>tool (size = call + result tokens)</span><span><span class="k" style="background:${kindColor('model')};height:3px"></span>call</span><span><span class="k" style="background:${kindColor('tool-result')};height:3px"></span>result (width = tokens)</span><span class="muted">${defined.length - toolStats.size} defined tools unused · ${fmtKk(unusedTok)} tokens</span>`;
-  if (!toolStats.size) {
-    el.classList.remove('graph');
+  const pairs = toolPairs(a);
+  if (!pairs.length) {
     el.innerHTML = '<div class="empty">No tool calls in this request\'s messages.</div>';
     return;
   }
-  forceGraph(el, nodes, links, {
-    legend, charge: -90, anchorStrength: 0.12, maxWidth: 10,
-    linkDistance: () => 140,
-    onClick: (g) => {
-      if (g.id.startsWith('m:')) openMessage(Number(g.id.slice(2)), a);
+  const defs = new Map(a.parts.filter((p) => p.area === 'tools' && p.name).map((p) => [p.name!, p]));
+  const palette = d3.schemeTableau10;
+  const tools = [...new Set(pairs.map((x) => x.call.name!))];
+  const stats = new Map(tools.map((t) => [t, { calls: 0, inTok: 0, outTok: 0, first: Infinity, errors: 0 }]));
+  for (const { call, result } of pairs) {
+    const s = stats.get(call.name!)!;
+    s.calls++;
+    s.inTok += call.tokens || 0;
+    s.outTok += result?.tokens || 0;
+    s.first = Math.min(s.first, call.index);
+    if (result?.isError) s.errors++;
+  }
+  tools.sort((x, y) => stats.get(y)!.inTok + stats.get(y)!.outTok - (stats.get(x)!.inTok + stats.get(x)!.outTok));
+  const toolColor = new Map(tools.map((t, i) => [t, palette[i % palette.length]]));
+
+  const nodes: ArcNode[] = [
+    ...idx.map((i) => {
+      const ps = byMsg.get(i)!;
+      const t = sumT(ps);
+      return {
+        id: `m:${i}`, label: `messages[${i}]`, color: ROLE_COLOR[ps[0].role] || '#64748b', value: t, tick: String(i),
+        tip: `<b>messages[${i}] · ${esc(ps[0].role)}</b><div class="muted small">${esc([...new Set(ps.map((p) => p.blockType))].join(' + '))}</div><div class="row"><span>tokens</span><span>${fmt(t)}</span></div><div class="muted small">click to inspect</div>`,
+      };
+    }),
+    ...tools.map((t) => {
+      const s = stats.get(t)!;
+      const def = defs.get(t);
+      return {
+        id: `t:${t}`, label: t, color: toolColor.get(t)!, square: true, value: s.inTok + s.outTok, tick: '',
+        tip: `<b>${esc(t)}</b><div class="row"><span>calls</span><span>${s.calls}${s.errors ? ` · ${s.errors} errors` : ''}</span></div><div class="row"><span>call input tokens</span><span>${fmt(s.inTok)}</span></div><div class="row"><span>result tokens</span><span>${fmt(s.outTok)}</span></div><div class="row"><span>definition tokens</span><span>${def ? fmt(def.tokens) : '–'}</span></div><div class="muted small">click to inspect the definition</div>`,
+      };
+    }),
+  ];
+  const arcs: Arc[] = [];
+  for (const { call, result } of pairs) {
+    const t = call.name!;
+    arcs.push({ source: `m:${call.index}`, target: `t:${t}`, value: call.tokens || 0, color: toolColor.get(t)!, above: true, group: t,
+      tip: `<b>call · ${esc(t)}</b><div class="muted small">${esc(partPath(call) || '')}</div><div class="row"><span>input tokens</span><span>${fmt(call.tokens)}</span></div>` });
+    if (result) arcs.push({ source: `t:${t}`, target: `m:${result.index}`, value: result.tokens || 0, color: result.isError ? '#dc2626' : toolColor.get(t)!, above: false, group: t,
+      tip: `<b>result · ${esc(t)}</b>${result.isError ? ' <span class="pill bad">error</span>' : ''}<div class="muted small">${esc(partPath(result) || '')} · ${esc(result.label)}</div><div class="row"><span>tokens back into context</span><span>${fmt(result.tokens)}</span></div>` });
+  }
+  const msgIds = idx.map((i) => `m:${i}`);
+  // tools inserted just before the message where they were first called
+  const inline: string[] = [];
+  const byFirst = d3.group(tools, (t) => stats.get(t)!.first);
+  for (const i of idx) {
+    for (const t of byFirst.get(i) || []) inline.push(`t:${t}`);
+    inline.push(`m:${i}`);
+  }
+  const byTokens = [...nodes].sort((x, y) => y.value - x.value).map((n) => n.id);
+  const groups: ArcGroup[] = tools.map((t) => ({ key: t, label: toolLabel(t), color: toolColor.get(t)!, sub: `${stats.get(t)!.calls}× · ${fmtKk(stats.get(t)!.outTok)}` }));
+  arcDiagram(el, nodes, arcs, {
+    orders: [
+      { key: 'inline', label: 'by position (tools at first use)', ids: inline },
+      { key: 'last', label: 'by position (tools grouped at the end)', ids: [...msgIds, ...tools.map((t) => `t:${t}`)] },
+      { key: 'tokens', label: 'by tokens', ids: byTokens },
+    ],
+    groups,
+    aboveLabel: 'calls: assistant message → tool (width = input tokens)',
+    belowLabel: 'results: tool → message (width = tokens returned)',
+    onClick: (n) => {
+      if (n.id.startsWith('m:')) openMessage(Number(n.id.slice(2)), a);
       else {
-        const def = toolDefs.get(g.id.slice(2));
+        const def = defs.get(n.id.slice(2));
         if (def) openPart(def, a);
       }
+    },
+  });
+}
+
+// Sankey: what the calls cost going in, per tool, and what came back into context.
+function drawToolFlow(el: HTMLElement, a: Analysis): void {
+  const pairs = toolPairs(a);
+  const nodes: SNode[] = [{ id: 'in', label: 'tool_use input (assistant)', color: kindColor('model'), column: 0 }];
+  const links: SLink[] = [];
+  const tools = new Map<string, { inTok: number; ok: number; err: number; calls: number }>();
+  for (const { call, result } of pairs) {
+    const s = tools.get(call.name!) || { inTok: 0, ok: 0, err: 0, calls: 0 };
+    s.calls++;
+    s.inTok += call.tokens || 0;
+    if (result?.isError) s.err += result.tokens || 0;
+    else s.ok += result?.tokens || 0;
+    tools.set(call.name!, s);
+  }
+  for (const [t, s] of tools) {
+    const def = a.parts.find((p) => p.area === 'tools' && p.name === t);
+    nodes.push({ id: `t:${t}`, label: toolLabel(t), color: kindColor(def?.kind || (t.startsWith('mcp__') ? 'mcp-remote' : 'harness-tool')), column: 1,
+      tip: `<b>${esc(t)}</b><div class="row"><span>calls</span><span>${s.calls}</span></div><div class="row"><span>input tokens</span><span>${fmt(s.inTok)}</span></div><div class="row"><span>result tokens</span><span>${fmt(s.ok + s.err)}</span></div><div class="row"><span>returned per input token</span><span>${s.inTok ? (((s.ok + s.err) / s.inTok)).toFixed(1) + '×' : '–'}</span></div>` });
+    links.push({ source: 'in', target: `t:${t}`, value: s.inTok });
+    links.push({ source: `t:${t}`, target: 'ok', value: s.ok, color: kindColor('tool-result') });
+    links.push({ source: `t:${t}`, target: 'err', value: s.err, color: '#dc2626' });
+  }
+  nodes.push({ id: 'ok', label: 'tool_result back into context', color: kindColor('tool-result'), column: 2 });
+  nodes.push({ id: 'err', label: 'error results', color: '#dc2626', column: 2 });
+  sankeyChart(el, nodes, links, {
+    empty: 'No tool calls in this request.',
+    onClick: (n) => {
+      const def = a.parts.find((p) => p.area === 'tools' && `t:${p.name}` === n.id);
+      if (def) openPart(def, a);
     },
   });
 }
@@ -812,26 +853,31 @@ function renderSources(v: HTMLElement, rec: FullRequest, a: Analysis): void {
       ${stat('Built-in / conversation', fmt(a.totals.tokens - usedTok), 'harness, tools, user, model, results')}
       ${stat('Project', esc(basename(rec.projectDir) || '–'), esc(short(rec.projectDir)))}
     </div>
-    <div class="card"><div class="card-hd"><h3>Source structure &amp; usage flow</h3><span class="desc">project → scope → kind → file, and where each file's tokens land in the request · size = tokens · drag, zoom, hover</span><span class="grow"></span>
-      <label class="small muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="s-unused" ${S.showUnused ? 'checked' : ''}> show unused</label></div>
-      <div class="card-bd"><div id="c-srctree" class="chart graph tall"></div></div></div>
+    <div class="card"><div class="card-hd"><h3>Usage flow</h3><span class="desc">source kind → file → request area · width = tokens · click a file to open it</span></div>
+      <div class="card-bd"><div id="c-srcflow" class="chart"></div></div></div>
+    <div class="card"><div class="card-hd"><h3>Presence over the session</h3><span class="desc">which sources each step sent · shade = tokens</span></div>
+      <div class="card-bd"><div id="c-presence" class="chart"><div class="muted small">loading the session's steps…</div></div></div></div>
+    <div class="card"><div class="card-hd"><h3>Inventory structure</h3><span class="desc">project → scope → kind → file · size = tokens here · click a branch to expand, a file to open it</span><span class="grow"></span>
+      <label class="small muted" style="display:flex;gap:6px;align-items:center" for="s-unused"><input type="checkbox" id="s-unused" ${S.showUnused ? 'checked' : ''}> show files not sent</label></div>
+      <div class="card-bd"><div id="c-srctree" class="chart"></div></div></div>
     <div class="card"><div class="card-hd"><h3>Inventory</h3><span class="desc">"coverage" = how much of the file is present verbatim · "steps" = calls in this session that include it</span><span class="grow"></span><input class="search" id="s-filter" placeholder="Filter sources…" value="${esc(S.sourceFilter)}"></div>
       <div class="card-bd"><div class="table-wrap"><table><thead><tr><th></th><th>source</th><th>scope</th><th class="num">file size</th><th class="num">tokens here</th><th class="num">share</th><th class="num">coverage</th><th>match</th><th>where</th><th>steps</th></tr></thead><tbody id="s-rows"></tbody></table></div></div></div>`;
   const tbody = $('#s-rows', v);
-  const stepsFor = sessionStepsBySource();
   const drawRows = (): void => {
+    const stepsFor = sessionStepsBySource();
     const f = S.sourceFilter.toLowerCase();
     tbody.innerHTML = rows
       .filter(({ s }) => !f || `${s.name} ${s.path} ${s.kind} ${s.scope}`.toLowerCase().includes(f))
       .map(({ s, u }) => {
         const full = s as PublicSource;
+        const steps = stepsFor.get(s.id) || [];
         return `<tr class="click ${u.used ? '' : 'unused'}" data-src="${s.id}">
     <td><span class="k" style="background:${kindColor(s.kind)}"></span></td>
     <td><b>${esc(s.name)}</b> <span class="muted small">${esc(kindLabel(s.kind))}${(s as AdhocSource).adhoc ? ' (outside inventory)' : ''}</span><div class="muted small mono">${esc(short(s.path))}</div>${s.description ? `<div class="small muted">${esc(s.description.slice(0, 160))}</div>` : ''}${full.hooks && full.hooks.length ? `<div class="small">hooks: ${full.hooks.map((h) => `<span class="badge">${esc(h.event)}${h.matcher ? ' ' + esc(h.matcher) : ''}</span>`).join(' ')}</div>` : ''}${full.servers ? `<div class="small">servers: ${full.servers.map((x) => `<span class="badge">${esc(x.name)}</span>`).join(' ')}</div>` : ''}</td>
     <td>${esc(s.scope)}</td><td class="num">${fmt(s.size)}</td><td class="num">${u.used ? fmt(u.tokens) : '<span class="muted">not sent</span>'}</td><td class="num">${u.used ? pct(u.tokens, a.totals.tokens) : ''}</td><td class="num">${u.used ? pct(u.chars, s.size || u.chars) : ''}</td>
     <td class="small">${Object.entries(u.matches).map(([k, n]) => `<span class="badge outline">${esc(k)}×${n}</span>`).join(' ')}</td>
     <td class="small">${u.parts.slice(0, 8).map((pid) => { const p = a.parts.find((x) => x.id === pid); return p ? `<span class="link" data-part="${p.id}" title="${esc(p.label)}">${esc(partPath(p) || p.id)}</span>` : ''; }).join(' ')}${u.parts.length > 8 ? ` <span class="muted">+${u.parts.length - 8}</span>` : ''}</td>
-    <td class="small mono">${(stepsFor.get(s.id) || []).join(' ')}</td>
+    <td class="small mono">${steps.length ? `${steps.length} step${steps.length > 1 ? 's' : ''} <span class="muted">${esc(steps[0])}–${esc(steps[steps.length - 1])}</span>` : ''}</td>
   </tr>`;
       })
       .join('');
@@ -853,78 +899,118 @@ function renderSources(v: HTMLElement, rec: FullRequest, a: Analysis): void {
     S.showUnused = (e.target as HTMLInputElement).checked;
     drawSourceTree($('#c-srctree', v), rec, a, all);
   };
+  drawSourceFlow($('#c-srcflow', v), a, all);
   drawSourceTree($('#c-srctree', v), rec, a, all);
-  if (!S.sessionAnalyses.size) void ensureSessionAnalyses().then(() => { if (S.tab === 'sources' && S.rec === rec) drawRows(); });
+  void ensureSessionAnalyses().then(() => {
+    if (S.tab !== 'sources' || S.rec !== rec) return;
+    drawRows();
+    drawPresence($('#c-presence', v), rec, all);
+  });
+}
+
+const AREA_LABEL: Record<string, string> = { system: 'System prompt', tools: 'Tools', messages: 'Messages' };
+
+function drawSourceFlow(el: HTMLElement, a: Analysis, all: UiSource[]): void {
+  const byId = new Map(all.map((s) => [s.id, s]));
+  const nodes = new Map<string, SNode>();
+  const flows = new Map<string, number>();
+  const add = (from: string, to: string, t: number): void => { flows.set(`${from}|${to}`, (flows.get(`${from}|${to}`) || 0) + t); };
+  for (const [k, label] of Object.entries(AREA_LABEL)) if (a.totals.byArea[k as 'system']) nodes.set(`a:${k}`, { id: `a:${k}`, label, color: AREA_COLOR[k], column: 2 });
+  for (const p of a.parts) {
+    for (const s of p.spans) {
+      const t = s.tokens || 0;
+      if (t <= 0) continue;
+      const kindId = `k:${s.kind}`;
+      if (!nodes.has(kindId)) nodes.set(kindId, { id: kindId, label: kindLabel(s.kind), color: kindColor(s.kind), column: 0 });
+      if (s.sourceId) {
+        const src = byId.get(s.sourceId);
+        const fileId = `f:${s.sourceId}`;
+        if (!nodes.has(fileId)) nodes.set(fileId, { id: fileId, label: src?.name || s.sourceId, color: kindColor(src?.kind || s.kind), column: 1,
+          tip: `<b>${esc(src?.name || s.sourceId)}</b><div class="mono muted small">${esc(short(src?.path))}</div><div class="row"><span>tokens here</span><span>${fmt(a.totals.sourceUsage[s.sourceId]?.tokens)}</span></div><div class="muted small">click to open the file</div>` });
+        add(kindId, fileId, t);
+        add(fileId, `a:${p.area}`, t);
+      } else {
+        add(kindId, `a:${p.area}`, t);
+      }
+    }
+  }
+  const links: SLink[] = [...flows.entries()].map(([k, value]) => { const [source, target] = k.split('|'); return { source, target, value }; });
+  sankeyChart(el, [...nodes.values()], links, {
+    rowH: 28,
+    onClick: (n) => { if (n.id.startsWith('f:')) void openSource(n.id.slice(2)); },
+  });
 }
 
 function drawSourceTree(el: HTMLElement, rec: FullRequest, a: Analysis, all: UiSource[]): void {
   const usage = a.totals.sourceUsage;
-  const nodes: GNode[] = [];
-  const links: GLink[] = [];
-  const has = new Set<string>();
-  const node = (n: GNode): void => { if (!has.has(n.id)) { has.add(n.id); nodes.push(n); } };
-  const maxTok = Math.max(1, ...all.map((s) => usage[s.id]?.tokens || 0), ...Object.values(a.totals.byKind).map((k) => k!.tokens));
-  const rad = (t: number): number => 4 + 16 * Math.sqrt(t / maxTok);
-
-  node({ id: 'root', label: basename(rec.projectDir) || 'project', color: '#18181b', r: 13, ax: 0.3, ay: 0.5, fixed: true, labelAlways: true, tip: `<b>${esc(short(rec.projectDir))}</b><div class="muted small">project root of this session</div>` });
-  const areas: Array<[string, string, number]> = [['system', 'System prompt', 0.2], ['tools', 'Tools', 0.5], ['messages', 'Messages', 0.8]];
-  for (const [k, label, y] of areas) {
-    const t = a.totals.byArea[k as 'system']?.tokens || 0;
-    node({ id: `area:${k}`, label: `${label} · ${fmtKk(t)}`, color: AREA_COLOR[k], r: 8 + 12 * Math.sqrt(t / Math.max(1, a.totals.tokens)), ax: 0.88, ay: y, fixed: true, labelAlways: true, tip: `<b>${label}</b><div class="row"><span>tokens</span><span>${fmt(t)}</span></div>` });
-  }
-  // per-source → area token sums from the spans
-  const flows = new Map<string, number>();
-  const kindFlows = new Map<string, number>();
-  for (const p of a.parts) for (const s of p.spans) {
-    const key = s.sourceId ? `${s.sourceId}|${p.area}` : `${s.kind}|${p.area}`;
-    (s.sourceId ? flows : kindFlows).set(key, ((s.sourceId ? flows : kindFlows).get(key) || 0) + (s.tokens || 0));
-  }
+  const scopes = new Map<string, Map<string, UiSource[]>>();
   for (const s of all) {
-    const u = usage[s.id];
-    if (!u?.used && !S.showUnused) continue;
-    const scope = `scope:${s.scope}`;
-    const kind = `kind:${s.scope}:${s.kind}`;
-    node({ id: scope, label: s.scope, color: '#3f3f46', r: 9, labelAlways: true, tip: `<b>scope: ${esc(s.scope)}</b>` });
-    node({ id: kind, label: kindLabel(s.kind), color: kindColor(s.kind), r: 6.5, labelAlways: true, tip: `<b>${esc(kindLabel(s.kind))}</b><div class="muted small">${esc(s.scope)} scope</div>` });
-    if (!links.some((l) => l.source === 'root' && l.target === scope)) links.push({ source: 'root', target: scope, value: 0, width: 1.6, tree: true, color: 'var(--muted-foreground)' });
-    if (!links.some((l) => l.source === scope && l.target === kind)) links.push({ source: scope, target: kind, value: 0, width: 1.3, tree: true, color: 'var(--muted-foreground)' });
-    node({
-      id: `src:${s.id}`, label: s.name, color: kindColor(s.kind), r: u?.used ? rad(u.tokens) : 3.5, dim: !u?.used, ring: !u?.used,
-      labelAlways: !!u?.used,
-      tip: `<b>${esc(s.name)}</b><div class="mono muted small">${esc(short(s.path))}</div><div class="row"><span>kind</span><span>${esc(kindLabel(s.kind))}</span></div><div class="row"><span>tokens here</span><span>${u?.used ? fmt(u.tokens) : 'not sent'}</span></div>${u?.used ? `<div class="row"><span>coverage</span><span>${pct(u.chars, s.size || u.chars)}</span></div><div class="row"><span>parts</span><span>${u.parts.length}</span></div>` : ''}<div class="muted small">click to open the file</div>`,
-    });
-    links.push({ source: kind, target: `src:${s.id}`, value: 0, width: 1, tree: true, color: 'var(--muted-foreground)' });
+    if (!usage[s.id]?.used && !S.showUnused) continue;
+    const kinds = scopes.get(s.scope) || new Map<string, UiSource[]>();
+    kinds.set(s.kind, [...(kinds.get(s.kind) || []), s]);
+    scopes.set(s.scope, kinds);
   }
-  // built-in producers (no file): harness, tools, conversation
-  for (const [key, t] of kindFlows) {
-    const [kind] = key.split('|');
-    if (t <= 0) continue;
-    node({ id: 'scope:built-in', label: 'built-in & conversation', color: '#3f3f46', r: 9, labelAlways: true, tip: '<b>built-in & conversation</b><div class="muted small">tokens not produced by an inventory file</div>' });
-    if (!links.some((l) => l.target === 'scope:built-in')) links.push({ source: 'root', target: 'scope:built-in', value: 0, width: 1.6, tree: true, color: 'var(--muted-foreground)', dash: '3 3' });
-    const tot = a.totals.byKind[kind as SourceKind]?.tokens || 0;
-    node({ id: `bk:${kind}`, label: kindLabel(kind), color: kindColor(kind), r: rad(tot), labelAlways: true, tip: `<b>${esc(kindLabel(kind))}</b><div class="row"><span>tokens</span><span>${fmt(tot)}</span></div>` });
-    if (!links.some((l) => l.target === `bk:${kind}`)) links.push({ source: 'scope:built-in', target: `bk:${kind}`, value: 0, width: 1, tree: true, color: 'var(--muted-foreground)' });
+  const tok = (ss: UiSource[]): number => ss.reduce((x, s) => x + (usage[s.id]?.tokens || 0), 0);
+  const branchTip = (title: string, ss: UiSource[]): string => `<b>${esc(title)}</b><div class="row"><span>files</span><span>${ss.length}</span></div><div class="row"><span>sent</span><span>${ss.filter((s) => usage[s.id]?.used).length}</span></div><div class="row"><span>tokens here</span><span>${fmt(tok(ss))}</span></div><div class="muted small">click to expand or collapse</div>`;
+  const children: TreeNode[] = [...scopes.entries()].map(([scope, kinds]) => {
+    const files = [...kinds.values()].flat();
+    return {
+      id: `scope:${scope}`, label: scope, color: '#52525b', value: tok(files), collapsed: tok(files) === 0, tip: branchTip(`${scope} scope`, files),
+      children: [...kinds.entries()].map(([kind, ss]) => ({
+        id: `kind:${scope}:${kind}`, label: kindLabel(kind), color: kindColor(kind), value: tok(ss), collapsed: tok(ss) === 0, tip: branchTip(kindLabel(kind), ss),
+        children: ss.slice().sort((x, y) => (usage[y.id]?.tokens || 0) - (usage[x.id]?.tokens || 0)).map((s) => {
+          const u = usage[s.id];
+          return {
+            id: `src:${s.id}`, label: s.name, color: kindColor(s.kind), value: u?.tokens || 0, hollow: !u?.used,
+            tip: `<b>${esc(s.name)}</b><div class="mono muted small">${esc(short(s.path))}</div><div class="row"><span>tokens here</span><span>${u?.used ? fmt(u.tokens) : 'not sent'}</span></div>${u?.used ? `<div class="row"><span>coverage</span><span>${pct(u.chars, s.size || u.chars)}</span></div>` : ''}<div class="muted small">click to open the file</div>`,
+          };
+        }),
+      })),
+    };
+  });
+  // tokens whose spans point at no inventory file (harness, built-in tools, conversation, reminders)
+  const noFile = new Map<string, number>();
+  for (const p of a.parts) for (const sp of p.spans) if (!sp.sourceId && (sp.tokens || 0) > 0) noFile.set(sp.kind, (noFile.get(sp.kind) || 0) + (sp.tokens || 0));
+  const builtIn = [...noFile.entries()].sort((x, y) => y[1] - x[1]);
+  const builtInTok = builtIn.reduce((x, [, t]) => x + t, 0);
+  if (builtIn.length) children.push({
+    id: 'scope:built-in', label: 'built-in & conversation', color: '#52525b', value: builtInTok, collapsed: true,
+    tip: '<b>built-in & conversation</b><div class="muted small">tokens not produced by an inventory file</div>',
+    children: builtIn.map(([k, t]) => ({ id: `bk:${k}`, label: kindLabel(k), color: kindColor(k), value: t, tip: `<b>${esc(kindLabel(k))}</b><div class="row"><span>tokens</span><span>${fmt(t)}</span></div>` })),
+  });
+  collapsibleTree(el, { id: 'root', label: basename(rec.projectDir) || 'project', color: '#18181b', value: 0, tip: `<b>${esc(short(rec.projectDir))}</b>`, children }, {
+    onLeaf: (n) => { if (n.id.startsWith('src:')) void openSource(n.id.slice(4)); },
+  });
+}
+
+function drawPresence(el: HTMLElement, rec: FullRequest, all: UiSource[]): void {
+  const sess = S.sessions.find((s) => s.id === rec.sessionId);
+  if (!sess) return;
+  const reqs = sess.requests.filter((r) => S.sessionAnalyses.has(r.id));
+  const names = new Map(all.map((s) => [s.id, s]));
+  const seen = new Map<string, { first: number; kind: string; name: string; path: string }>();
+  reqs.forEach((r, c) => {
+    const an = S.sessionAnalyses.get(r.id)!;
+    for (const s of an.adhocSources || []) if (!names.has(s.id)) names.set(s.id, s);
+    for (const [id, u] of Object.entries(an.totals.sourceUsage || {})) {
+      if (!u.used || seen.has(id)) continue;
+      const src = names.get(id);
+      seen.set(id, { first: c, kind: src?.kind || 'file', name: src?.name || id, path: src?.path || '' });
+    }
+  });
+  if (!seen.size) {
+    el.innerHTML = '<div class="empty">No inventory source was sent in this session.</div>';
+    return;
   }
-  const flowLink = (from: string, area: string, t: number, color: string, label: string): void => {
-    if (t <= 0 || !has.has(from)) return;
-    links.push({ source: from, target: `area:${area}`, value: t, color, tip: `<b>${esc(label)} → ${area}</b><div class="row"><span>tokens</span><span>${fmt(t)}</span></div>` });
-  };
-  for (const [key, t] of flows) {
-    const [id, area] = key.split('|');
-    const s = all.find((x) => x.id === id);
-    flowLink(`src:${id}`, area, t, s ? kindColor(s.kind) : '#94a3b8', s?.name || id);
-  }
-  for (const [key, t] of kindFlows) {
-    const [kind, area] = key.split('|');
-    flowLink(`bk:${kind}`, area, t, kindColor(kind), kindLabel(kind));
-  }
-  forceGraph(el, nodes, links, {
-    charge: -200, anchorStrength: 0.08, maxWidth: 12,
-    linkDistance: (l) => (l.tree ? 46 : 220),
-    legend: '<span>grey lines: structure (project → scope → kind → file)</span><span>coloured curves: usage flow into request areas, width = tokens</span><span>hollow dots: files not sent</span>',
-    onClick: (g) => {
-      if (g.id.startsWith('src:')) void openSource(g.id.slice(4));
-    },
+  const rows: HeatRow[] = [...seen.entries()]
+    .sort((x, y) => x[1].kind.localeCompare(y[1].kind) || x[1].first - y[1].first)
+    .map(([id, s]) => ({ id, label: s.name, color: kindColor(s.kind), sub: `${kindLabel(s.kind)} · ${short(s.path)}` }));
+  const cols: HeatCol[] = reqs.map((r) => ({ id: r.id, seq: r.seq || 0, mark: /compaction/.test(r.kind || ''), selected: r.id === rec.id }));
+  const cell = (r: number, c: number): number => S.sessionAnalyses.get(reqs[c].id)!.totals.sourceUsage?.[rows[r].id]?.tokens || 0;
+  presenceHeatmap(el, rows, cols, cell, {
+    markLabel: 'compaction call',
+    tip: (r, c, val) => `<b>${esc(rows[r].label)}</b><div class="muted small">${esc(rows[r].sub || '')}</div><div class="row"><span>step</span><span>#${cols[c].seq} ${esc(reqs[c].kind || '')}</span></div><div class="row"><span>tokens</span><span>${val ? fmt(val) : 'not sent'}</span></div>`,
+    onCell: (_r, c) => void select(cols[c].id),
   });
 }
 
@@ -1093,28 +1179,67 @@ async function renderRaw(v: HTMLElement, rec: FullRequest): Promise<void> {
 function renderSessionOverview(): void {
   void ensureSessionAnalyses().then(() => {
     if (S.rec && S.rec.sessionId === S.selSession) {
-      if (S.tab === 'sources') renderCenter(true);
+      if (S.tab === 'sources' || S.tab === 'session') renderCenter(true);
       return;
     }
     const sess = S.sessions.find((s) => s.id === S.selSession);
     if (!sess) return;
     const c = $('#center');
-    const reqs = sess.requests.filter((r) => S.sessionAnalyses.has(r.id));
-    const main = reqs.filter((r) => (r.kind || '').startsWith('main'));
-    const out = sess.requests.reduce((x, r) => x + (r.usage.output || 0), 0);
-    const peak = Math.max(0, ...reqs.map((r) => S.sessionAnalyses.get(r.id)!.totals.tokens));
-    c.innerHTML = `<div class="view"><div class="stats">
-        ${stat('Session', esc(sess.agent || basename(sess.projectDir) || sess.id.slice(0, 8)), new Date(sess.startedAt).toLocaleString())}
-        ${stat('Calls', fmt(sess.requests.length), `${main.length} agent turns · ${reqs.length - main.length} side calls`)}
-        ${stat('Peak context', fmt(peak), 'sum of parts, largest step')}
-        ${stat('Output tokens', fmt(out), 'all calls')}
-      </div>
-      <div class="card"><div class="card-hd"><h3>Context per step</h3><span class="desc">stacked by source kind · faded columns are side calls · click a column to open that step</span></div><div class="card-bd"><div id="c-steps" class="chart"></div></div></div></div>`;
-    stepColumns($('#c-steps', c), reqs.map((r) => {
-      const a = S.sessionAnalyses.get(r.id)!;
-      return { id: r.id, seq: r.seq || 0, label: r.kind || '', total: a.totals.tokens, parts: kindSlices(a), side: !(r.kind || '').startsWith('main') };
-    }), (id) => void select(id));
+    c.innerHTML = '<div class="view" id="view"></div>';
+    renderSessionView($('#view', c), sess, null);
   });
+}
+
+// Session-level view: tiles, the context timeline (stacked area by kind + cache difference panel).
+// Shown for a session header click and as the "session" tab of a selected step.
+function renderSessionView(v: HTMLElement, sess: SessionSummary, selectedId: string | null): void {
+  const reqs = sess.requests.filter((r) => S.sessionAnalyses.has(r.id));
+  const isMain = (r: RequestSummary): boolean => (r.kind || '').startsWith('main');
+  const main = reqs.filter(isMain);
+  const out = sess.requests.reduce((x, r) => x + (r.usage.output || 0), 0);
+  const prompt = (r: RequestSummary): number => (r.usage.input || 0) + (r.usage.cacheRead || 0) + (r.usage.cacheWrite || 0);
+  const peak = Math.max(0, ...main.map(prompt));
+  const read = main.reduce((x, r) => x + (r.usage.cacheRead || 0), 0);
+  const all = main.reduce((x, r) => x + prompt(r), 0);
+  v.innerHTML = `<div class="stats">
+      ${stat('Session', esc(sess.agent || basename(sess.projectDir) || sess.id.slice(0, 8)), new Date(sess.startedAt).toLocaleString())}
+      ${stat('Calls', fmt(sess.requests.length), `${main.length} agent turns · ${reqs.length - main.length} side calls`)}
+      ${stat('Peak context', fmt(peak), 'largest prompt (server usage)')}
+      ${stat('Cache hit rate', pct(read, all), `${fmtKk(all - read)} tokens written or uncached`)}
+      ${stat('Output tokens', fmt(out), 'all calls')}
+    </div>
+    <div class="card"><div class="card-hd"><h3>Context over the session</h3><span class="desc">agent turns stacked by source kind · ticks under the axis are side calls · wheel to zoom, drag to pan, click to open a step</span><span class="grow"></span><span id="c-tl-models"></span></div>
+      <div class="card-bd"><div id="c-timeline" class="chart"></div><div id="c-tl-legend"></div></div></div>`;
+  // Sessions can interleave loops on different models whose context sizes differ widely; a model
+  // filter keeps the stacked area readable.
+  const models = [...new Set(main.map((r) => r.model || ''))].filter(Boolean);
+  if (models.length > 1) {
+    $('#c-tl-models', v).innerHTML = `<label class="small muted" for="tl-model">model</label> <select id="tl-model" class="select"><option value="">all ${models.length} models</option>${models.map((m) => `<option value="${esc(m)}" ${S.tlModel === m ? 'selected' : ''}>${esc(m.replace('claude-', ''))} · ${main.filter((r) => r.model === m).length} turns</option>`).join('')}</select>`;
+    $<HTMLSelectElement>('#tl-model', v).onchange = (e) => {
+      S.tlModel = (e.target as HTMLSelectElement).value;
+      renderSessionView(v, sess, selectedId);
+    };
+  }
+  const shown = S.tlModel && models.includes(S.tlModel) ? main.filter((r) => r.model === S.tlModel) : main;
+  const totals = new Map<string, number>();
+  for (const r of shown) for (const [k, t] of Object.entries(S.sessionAnalyses.get(r.id)!.totals.byKind)) totals.set(k, (totals.get(k) || 0) + t!.tokens);
+  const keys: Slice[] = [...totals.entries()].sort((x, y) => y[1] - x[1]).map(([k, value]) => ({ key: k, label: kindLabel(k), value, color: kindColor(k) }));
+  const steps: TLStep[] = shown.map((r) => {
+    const an = S.sessionAnalyses.get(r.id)!;
+    const layers = Object.fromEntries(Object.entries(an.totals.byKind).map(([k, t]) => [k, t!.tokens]));
+    const p = prompt(r);
+    return { id: r.id, seq: r.seq || 0, label: (r.kind || '').replace(/^main:?/, '') || 'turn', layers, prompt: p || an.totals.tokens, cacheRead: r.usage.cacheRead || 0, selected: r.id === selectedId };
+  });
+  const sides: TLSide[] = [];
+  let lastMain = -1;
+  for (const r of reqs) {
+    if (isMain(r) && shown.includes(r)) lastMain++;
+    else if (isMain(r)) continue;
+    else sides.push({ id: r.id, seq: r.seq || 0, label: r.kind || 'side', after: Math.max(0, lastMain) });
+  }
+  const legend = $('#c-tl-legend', v);
+  legend.innerHTML = `<div class="legend">${keys.map((k) => `<span class="item" style="cursor:default"><span class="k" style="background:${k.color}"></span>${esc(k.label)}<b>${fmtKk(k.value)}</b></span>`).join('')}</div>`;
+  sessionTimeline($('#c-timeline', v), steps, sides, keys, { onClick: (id) => { S.tab = 'anatomy'; void select(id); } });
 }
 
 async function openSource(id: string, matchedText?: string, back?: () => void): Promise<void> {

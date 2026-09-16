@@ -5,6 +5,8 @@
 import type * as CyNS from 'cytoscape';
 import type { GraphData, GraphNodeData, RequestSummary, SessionSummary, PublicSource } from '../src/types.js';
 import { $, $$, BASE, NAME, api, basename, cssVar, esc, fmt, fmtKk, isDark, KINDS, kindColor, kindLabel, renderSourcePanel, short } from './common.js';
+import { sankeyChart } from './charts.js';
+import type { SLink, SNode } from './charts.js';
 
 type GMode = 'flow' | 'context';
 
@@ -232,6 +234,15 @@ async function draw(force = false): Promise<void> {
     return;
   }
   const data = await api<GraphData>(url);
+  $('#cy').hidden = data.mode === 'context';
+  $('#sankey').hidden = data.mode !== 'context';
+  $$('[data-gdir],[data-gact]').forEach((b) => ((b as HTMLButtonElement).disabled = data.mode === 'context'));
+  if (data.mode === 'context') {
+    empty.hidden = true;
+    drawContextSankey(data);
+    G.key = '';
+    return;
+  }
   const cy = ensureCy();
   const key = `${G.mode}:${url}:${G.dir}`;
   const elements = [...data.nodes.map((n) => ({ group: 'nodes' as const, data: n.data as unknown as Record<string, unknown> })), ...data.edges.map((e) => ({ group: 'edges' as const, data: e.data as unknown as Record<string, unknown> }))];
@@ -258,6 +269,21 @@ async function draw(force = false): Promise<void> {
   $('#gstats').textContent = data.mode === 'flow'
     ? `${st.turns} turns · ${st.calls} tool calls · ${st.sideCalls} side calls · ${fmt(st.promptTokens)} prompt tokens · ${fmt(st.outputTokens)} output`
     : `${st.sources} sources · ${fmt(st.tokens)} prompt tokens`;
+}
+
+// Turn context as a Sankey: sources (or built-in kinds) → request areas → the request.
+function drawContextSankey(data: GraphData): void {
+  const byId = new Map(data.nodes.map((n) => [n.data.id, n.data]));
+  const col = (d: GraphNodeData): number => (d.kind === 'request' ? 2 : d.kind === 'area' ? 1 : 0);
+  const color = (d: GraphNodeData): string => (d.kind === 'request' ? cssVar('--hl') : d.kind === 'area' ? ({ system: '#3f3f46', tools: '#52525b', messages: '#71717a' } as Record<string, string>)[d.ref?.id || ''] || '#52525b' : kindColor(d.kind));
+  const nodes: SNode[] = data.nodes.filter((n) => n.data.kind !== 'group').map((n) => ({
+    id: n.data.id, label: n.data.label, color: color(n.data), column: col(n.data),
+    tip: `<b>${esc(n.data.label)}</b>${n.data.sub ? `<div class="muted small">${esc(n.data.sub)}</div>` : ''}<div class="row"><span>tokens</span><span>${fmt(n.data.tokens)}</span></div><div class="muted small">click for details</div>`,
+  }));
+  const links: SLink[] = data.edges.filter((e) => e.data.kind === 'feeds').map((e) => ({ source: e.data.source, target: e.data.target, value: e.data.tokens || 0 }));
+  sankeyChart($('#sankey'), nodes, links, { rowH: 24, minHeight: 420, empty: 'Nothing to draw yet: this request has no analysis.', onClick: (n) => { const d = byId.get(n.id); if (d) void showDetail(d); } });
+  $('#glegend').innerHTML = '<span>link width = tokens</span><span>left: sources and built-in kinds · middle: request areas · right: the request</span>';
+  $('#gstats').textContent = `${data.stats.sources} sources · ${fmt(data.stats.tokens)} prompt tokens`;
 }
 
 async function showDetail(d: GraphNodeData): Promise<void> {

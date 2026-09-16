@@ -1,6 +1,7 @@
-// d3 charts for the inspector: area donut, zoomable request map (icicle), force-directed
-// relation graphs, and the per-session step columns. d3 is vendored (vendor/d3.min.js) and
-// loaded as a global before app.js. Compiled to dist/ui/charts.js.
+// d3 charts for the inspector and the graph page: area donut, kind bar, zoomable request map
+// (icicle), Sankey flows, the messages/tools arc diagram, the collapsible source tree, the source
+// presence heatmap and the session timeline. d3 and d3-sankey are vendored (vendor/*.min.js) and
+// loaded as globals before the page modules. Compiled to dist/ui/charts.js.
 import type * as D3 from 'd3';
 import { esc, fmt, fmtKk, hideTip, showTip } from './common.js';
 
@@ -184,214 +185,402 @@ export function icicle(el: HTMLElement, data: MapNode, opts: { onSelect: (n: Map
 }
 
 const cssId = (s: string): string => s.replace(/[^A-Za-z0-9_-]/g, '_');
+const cssVar = (n: string): string => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
-// ---------------------------------------------------------------------------- force graph
+// ---------------------------------------------------------------------------- sankey
 
-export interface GNode {
-  id: string;
-  label: string;
-  color: string;
-  r: number;
-  group?: string;
-  /** anchor positions in [0,1] of the canvas (weak forces pull the node toward them) */
-  ax?: number;
-  ay?: number;
-  fixed?: boolean;
-  dim?: boolean;
-  ring?: boolean;
-  tip?: string;
-  labelAlways?: boolean;
-}
-export interface GLink {
-  source: string;
-  target: string;
-  value: number;
-  color?: string;
-  dash?: string;
-  width?: number;
-  tree?: boolean;
-  tip?: string;
-}
+export interface SNode { id: string; label: string; color: string; column: number; tip?: string }
+export interface SLink { source: string; target: string; value: number; color?: string; tip?: string }
 
-type SimNode = GNode & D3.SimulationNodeDatum;
-type SimLink = Omit<GLink, 'source' | 'target'> & D3.SimulationLinkDatum<SimNode>;
+type SkNode = SNode & { x0?: number; x1?: number; y0?: number; y1?: number; value?: number };
+type SkLink = { source: SkNode; target: SkNode; value: number; width?: number; color?: string; tip?: string };
 
-export interface ForceOptions {
-  onClick?: (n: GNode) => void;
-  legend?: string;
-  linkDistance?: (l: GLink) => number;
-  charge?: number;
-  anchorStrength?: number;
-  maxWidth?: number;
-}
-
-export interface ForceHandle { highlight(id: string | null): void; fit(): void; destroy(): void }
-
-export function forceGraph(el: HTMLElement, nodes: GNode[], links: GLink[], opts: ForceOptions = {}): ForceHandle {
-  el.innerHTML = '';
-  const w = el.clientWidth || 800;
-  const h = el.clientHeight || 460;
-  const simNodes: SimNode[] = nodes.map((n) => {
-    const x = (n.ax ?? 0.5) * w;
-    const y = (n.ay ?? 0.5) * h;
-    return n.fixed ? { ...n, x, y, fx: x, fy: y } : { ...n, x: x + (Math.random() - 0.5) * 40, y: y + (Math.random() - 0.5) * 40 };
-  });
-  const byId = new Map(simNodes.map((n) => [n.id, n]));
-  const simLinks: SimLink[] = links.filter((l) => byId.has(l.source) && byId.has(l.target)).map((l) => ({ ...l, source: byId.get(l.source)!, target: byId.get(l.target)! }));
-  const maxV = d3.max(simLinks, (l) => l.value) || 1;
-  const wScale = d3.scaleSqrt().domain([0, maxV]).range([0.8, opts.maxWidth ?? 9]);
-
-  const svg = d3.select(el).append('svg').attr('viewBox', `0 0 ${w} ${h}`);
-  const defs = svg.append('defs');
-  defs.append('marker').attr('id', 'arrow').attr('viewBox', '0 -4 8 8').attr('refX', 8).attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
-    .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', 'var(--muted-foreground)');
-  const view = svg.append('g');
-  const zoom = d3.zoom<SVGSVGElement, undefined>().scaleExtent([0.15, 5]).on('zoom', (ev: D3.D3ZoomEvent<SVGSVGElement, undefined>) => view.attr('transform', ev.transform.toString()));
-  (svg as unknown as D3.Selection<SVGSVGElement, undefined, null, undefined>).call(zoom).on('dblclick.zoom', null);
-
-  const link = view.append('g').selectAll<SVGPathElement, SimLink>('path').data(simLinks).join('path')
-    .attr('class', 'link')
-    .attr('stroke', (l) => l.color || 'var(--muted-foreground)')
-    .attr('stroke-opacity', (l) => (l.tree ? 0.35 : 0.55))
-    .attr('stroke-width', (l) => l.width ?? wScale(l.value))
-    .attr('stroke-dasharray', (l) => l.dash || null)
-    .on('mouseenter', (ev: MouseEvent, l) => { if (l.tip) showTip(l.tip, ev); })
-    .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
-    .on('mouseleave', hideTip);
-
-  const node = view.append('g').selectAll<SVGGElement, SimNode>('g').data(simNodes).join('g').attr('class', 'node')
-    .style('opacity', (n) => (n.dim ? 0.45 : 1));
-  node.append('circle').attr('r', (n) => n.r).style('fill', (n) => (n.ring ? 'var(--card)' : n.color))
-    .style('stroke', (n) => (n.ring ? n.color : 'var(--card)')).style('stroke-width', (n) => (n.ring ? 2.5 : 1.5));
-  node.append('text').attr('x', (n) => n.r + 4).attr('y', 3.5).text((n) => n.label)
-    .style('display', (n) => (n.labelAlways || n.r >= 7 ? null : 'none'));
-
-  const neighbors = new Map<string, Set<string>>();
-  for (const l of simLinks) {
-    const s = (l.source as SimNode).id;
-    const t = (l.target as SimNode).id;
-    if (!neighbors.has(s)) neighbors.set(s, new Set([s]));
-    if (!neighbors.has(t)) neighbors.set(t, new Set([t]));
-    neighbors.get(s)!.add(t);
-    neighbors.get(t)!.add(s);
+/** Sankey diagram with fixed columns (node.column), link width = value. Hover highlights a node's
+ *  links; click calls onClick. Built on the vendored d3-sankey. */
+export function sankeyChart(el: HTMLElement, nodes: SNode[], links: SLink[], opts: { onClick?: (n: SNode) => void; rowH?: number; minHeight?: number; empty?: string } = {}): void {
+  const ids = new Set(nodes.map((n) => n.id));
+  const used = links.filter((l) => l.value > 0 && ids.has(l.source) && ids.has(l.target) && l.source !== l.target);
+  const linked = new Set(used.flatMap((l) => [l.source, l.target]));
+  const ns = nodes.filter((n) => linked.has(n.id));
+  if (!used.length) {
+    el.innerHTML = `<div class="empty">${esc(opts.empty || 'Nothing flows here.')}</div>`;
+    return;
   }
-  const highlight = (id: string | null): void => {
-    if (!id) {
-      node.classed('dim', false).select('text').style('display', (n) => (n.labelAlways || n.r >= 7 ? null : 'none'));
-      link.classed('dim', false);
+  const columns = d3.max(ns, (n) => n.column)! + 1;
+  const perCol = d3.max(d3.rollups(ns, (v) => v.length, (n) => n.column), (d) => d[1]) || 1;
+  whenSized(el, (w) => {
+    el.innerHTML = '';
+    const h = Math.max(opts.minHeight ?? 240, perCol * (opts.rowH ?? 26));
+    // room for the first column's labels on the left and the last column's on the right
+    const labelW = (col: number): number => 18 + 6.2 * (d3.max(ns.filter((n) => n.column === col), (n) => Math.min(34, n.label.length) + 3 + fmtKk(1000).length) || 0);
+    const padL = Math.min(w * 0.3, labelW(0));
+    const padR = Math.min(w * 0.3, labelW(columns - 1));
+    const graph = { nodes: ns.map((n) => ({ ...n })) as SkNode[], links: used.map((l) => ({ ...l })) as unknown as SkLink[] };
+    const layout = d3.sankey<SkNode, SkLink>()
+      .nodeId((n) => n.id)
+      .nodeAlign((n) => Math.min(columns - 1, (n as SkNode).column))
+      .nodeWidth(12).nodePadding(Math.max(8, Math.min(16, (h - 20) / perCol / 3)))
+      .extent([[padL, 8], [w - padR, h - 8]]);
+    try {
+      layout(graph as never);
+    } catch (e) {
+      el.innerHTML = `<div class="empty">Could not lay out this flow: ${esc((e as Error).message)}</div>`;
       return;
     }
-    const hood = neighbors.get(id) || new Set([id]);
-    node.classed('dim', (n) => !hood.has(n.id)).select('text').style('display', (n) => (hood.has(n.id) || n.labelAlways || n.r >= 7 ? null : 'none'));
-    link.classed('dim', (l) => (l.source as SimNode).id !== id && (l.target as SimNode).id !== id);
-  };
-  node
-    .on('mouseenter', (ev: MouseEvent, n) => { highlight(n.id); showTip(n.tip || `<b>${esc(n.label)}</b>`, ev); })
-    .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
-    .on('mouseleave', () => { highlight(null); hideTip(); })
-    .on('click', (_ev, n) => opts.onClick?.(n));
-
-  const sim = d3.forceSimulation<SimNode>(simNodes)
-    .force('link', d3.forceLink<SimNode, SimLink>(simLinks).id((n) => n.id).distance((l) => (opts.linkDistance ? opts.linkDistance(l as unknown as GLink) : 60)).strength((l) => (l.tree ? 0.9 : 0.25)))
-    .force('charge', d3.forceManyBody<SimNode>().strength((n) => (opts.charge ?? -160) * Math.max(0.6, n.r / 8)).distanceMax(500))
-    .force('collide', d3.forceCollide<SimNode>().radius((n) => n.r + (n.fixed ? 3 : n.labelAlways ? 22 : 5)))
-    .force('ax', d3.forceX<SimNode>((n) => (n.ax ?? 0.5) * w).strength((n) => (n.ax == null ? 0.02 : opts.anchorStrength ?? 0.25)))
-    .force('ay', d3.forceY<SimNode>((n) => (n.ay ?? 0.5) * h).strength((n) => (n.ay == null ? 0.03 : opts.anchorStrength ?? 0.25)));
-
-  const drag = d3.drag<SVGGElement, SimNode>()
-    .on('start', (ev: D3.D3DragEvent<SVGGElement, SimNode, SimNode>, n) => { if (!ev.active) sim.alphaTarget(0.25).restart(); n.fx = n.x; n.fy = n.y; })
-    .on('drag', (ev: D3.D3DragEvent<SVGGElement, SimNode, SimNode>, n) => { n.fx = ev.x; n.fy = ev.y; })
-    .on('end', (ev: D3.D3DragEvent<SVGGElement, SimNode, SimNode>, n) => { if (!ev.active) sim.alphaTarget(0); if (!n.fixed) { n.fx = null; n.fy = null; } });
-  node.call(drag);
-
-  const curve = (l: SimLink): string => {
-    const s = l.source as SimNode;
-    const t = l.target as SimNode;
-    const dx = t.x! - s.x!;
-    const dy = t.y! - s.y!;
-    const dist = Math.hypot(dx, dy) || 1;
-    const ex = t.x! - (dx / dist) * (t.r + 2);
-    const ey = t.y! - (dy / dist) * (t.r + 2);
-    if (l.tree) return `M${s.x},${s.y}L${ex},${ey}`;
-    const bend = dist * 0.18;
-    const mx = (s.x! + ex) / 2 - (dy / dist) * bend;
-    const my = (s.y! + ey) / 2 + (dx / dist) * bend;
-    return `M${s.x},${s.y}Q${mx},${my} ${ex},${ey}`;
-  };
-  const tick = (): void => {
-    link.attr('d', curve);
-    node.attr('transform', (n) => `translate(${n.x},${n.y})`);
-  };
-  sim.on('tick', tick);
-  // settle mostly off-screen so the first paint is readable, then let it breathe
-  sim.stop();
-  for (let i = 0; i < 180; i++) sim.tick();
-  tick();
-  sim.alpha(0.08).restart();
-
-  const fit = (): void => {
-    const xs = d3.extent(simNodes, (n) => n.x!) as [number, number];
-    const ys = d3.extent(simNodes, (n) => n.y!) as [number, number];
-    if (xs[0] == null) return;
-    const bw = xs[1] - xs[0] + 160;
-    const bh = ys[1] - ys[0] + 80;
-    const k = Math.min(2, 0.95 / Math.max(bw / w, bh / h));
-    const tx = w / 2 - k * (xs[0] + xs[1]) / 2;
-    const ty = h / 2 - k * (ys[0] + ys[1]) / 2;
-    (svg as unknown as D3.Selection<SVGSVGElement, undefined, null, undefined>).transition().duration(450).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
-  };
-  setTimeout(fit, 30);
-
-  const ctrl = document.createElement('div');
-  ctrl.className = 'ctrl';
-  ctrl.innerHTML = '<button class="icon" data-g="fit" title="fit to view">fit</button><button class="icon" data-g="shake" title="re-run the layout">relayout</button>';
-  el.appendChild(ctrl);
-  (ctrl.querySelector('[data-g=fit]') as HTMLElement).onclick = fit;
-  (ctrl.querySelector('[data-g=shake]') as HTMLElement).onclick = () => { sim.alpha(0.9).restart(); setTimeout(fit, 900); };
-  if (opts.legend) {
-    const lg = document.createElement('div');
-    lg.className = 'glegend';
-    lg.innerHTML = opts.legend;
-    el.appendChild(lg);
-  }
-  return { highlight, fit, destroy: () => sim.stop() };
-}
-
-// ---------------------------------------------------------------------------- session columns
-
-export interface StepCol { id: string; seq: number; label: string; total: number; parts: Slice[]; side: boolean; selected?: boolean }
-
-export function stepColumns(el: HTMLElement, steps: StepCol[], onClick: (id: string) => void): void {
-  whenSized(el, (w, _h, first) => {
-    el.innerHTML = '';
-    const h = 220;
-    const m = { t: 10, r: 8, b: 22, l: 44 };
     const svg = d3.select(el).append('svg').attr('viewBox', `0 0 ${w} ${h}`).attr('height', h);
-    const x = d3.scaleBand().domain(steps.map((s) => s.id)).range([m.l, w - m.r]).paddingInner(0.18);
-    const y = d3.scaleLinear().domain([0, d3.max(steps, (s) => s.total) || 1]).nice().range([h - m.b, m.t]);
-    svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.l},0)`)
-      .call(d3.axisLeft(y).ticks(4).tickFormat((v) => fmtKk(Number(v))).tickSize(-(w - m.l - m.r)))
-      .call((g) => g.select('.domain').remove())
-      .call((g) => g.selectAll('.tick line').attr('stroke-opacity', 0.5));
-    const every = Math.ceil(steps.length / Math.max(1, Math.floor((w - m.l) / 34)));
-    svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${h - m.b})`)
-      .call(d3.axisBottom(x).tickFormat((id) => { const i = steps.findIndex((s) => s.id === id); return i % every === 0 ? `#${steps[i].seq}` : ''; }).tickSize(0))
-      .call((g) => g.select('.domain').remove());
-    const col = svg.append('g').selectAll('g').data(steps).join('g').attr('class', 'cell').attr('transform', (s) => `translate(${x(s.id)},0)`)
-      .style('opacity', (s) => (s.side ? 0.55 : 1));
-    col.each(function (s) {
-      let acc = 0;
-      d3.select(this).selectAll('rect').data(s.parts.filter((p) => p.value > 0)).join('rect')
-        .attr('width', x.bandwidth()).attr('fill', (p) => p.color).style('stroke', 'none')
-        .attr('y', h - m.b).attr('height', 0)
-        .transition().duration(first ? 450 : 0).delay((_p, i) => i * 10)
-        .attr('y', (p) => { acc += p.value; return y(acc); })
-        .attr('height', (p) => Math.max(0, y(0) - y(p.value)));
-      if (s.selected) d3.select(this).append('rect').attr('x', -2).attr('width', x.bandwidth() + 4).attr('y', y(s.total) - 3).attr('height', y(0) - y(s.total) + 3).attr('fill', 'none').attr('stroke', 'var(--hl)').attr('stroke-width', 1.5).attr('rx', 3);
-    });
-    col.on('mouseenter', (ev: MouseEvent, s) => showTip(`<b>#${s.seq} ${esc(s.label)}</b><div class="row"><span>prompt tokens</span><span>${fmt(s.total)}</span></div>${s.parts.slice().sort((a, b) => b.value - a.value).slice(0, 6).map((p) => `<div class="row"><span><span class="k" style="background:${p.color}"></span>${esc(p.label)}</span><span>${fmt(p.value)}</span></div>`).join('')}`, ev))
+    const link = svg.append('g').attr('fill', 'none').selectAll<SVGPathElement, SkLink>('path').data(graph.links).join('path')
+      .attr('class', 'link')
+      .attr('d', d3.sankeyLinkHorizontal() as never)
+      .style('stroke', (l) => l.color || l.source.color)
+      .style('stroke-opacity', 0.38)
+      .style('stroke-linecap', 'butt')
+      .attr('stroke-width', (l) => Math.max(1, l.width || 0))
+      .on('mouseenter', (ev: MouseEvent, l) => showTip(l.tip || `<b>${esc(l.source.label)} → ${esc(l.target.label)}</b><div class="row"><span>tokens</span><span>${fmt(l.value)}</span></div>`, ev))
       .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
-      .on('mouseleave', hideTip)
-      .on('click', (_ev, s) => { hideTip(); onClick(s.id); });
+      .on('mouseleave', hideTip);
+    const node = svg.append('g').selectAll<SVGGElement, SkNode>('g').data(graph.nodes).join('g').attr('class', 'node');
+    node.append('rect').attr('x', (n) => n.x0!).attr('y', (n) => n.y0!).attr('width', (n) => n.x1! - n.x0!).attr('height', (n) => Math.max(1.5, n.y1! - n.y0!))
+      .attr('rx', 2).style('fill', (n) => n.color).style('stroke', 'none');
+    // keep labels in one column at least 13px apart (small nodes sit on top of each other)
+    const labelY = new Map<SkNode, number>();
+    for (const colNodes of d3.groups(graph.nodes, (n) => n.x0).map((g) => g[1])) {
+      const sorted = colNodes.slice().sort((p, q) => p.y0! - q.y0!);
+      let last = -Infinity;
+      for (const n of sorted) { const y = Math.max((n.y0! + n.y1!) / 2, last + 13); labelY.set(n, y); last = y; }
+      const overflow = last - (h - 6);
+      if (overflow > 0) for (const n of sorted) labelY.set(n, labelY.get(n)! - overflow);
+    }
+    const leftmost = d3.min(graph.nodes, (n) => n.x0!)!;
+    const onLeft = (n: SkNode): boolean => n.x0 === leftmost; // first column labels sit left, the rest right
+    node.append('text').attr('class', 'lbl')
+      .attr('x', (n) => (onLeft(n) ? n.x0! - 6 : n.x1! + 6))
+      .attr('y', (n) => labelY.get(n)!).attr('dy', '0.35em')
+      .attr('text-anchor', (n) => (onLeft(n) ? 'end' : 'start'))
+      .text((n) => `${clip(n.label, 34)} · ${fmtKk(n.value || 0)}`);
+    const touches = (l: SkLink, n: SkNode): boolean => l.source === n || l.target === n;
+    node
+      .on('mouseenter', (ev: MouseEvent, n) => {
+        link.classed('dim', (l) => !touches(l, n)).style('stroke-opacity', (l) => (touches(l, n) ? 0.7 : 0.38));
+        showTip(n.tip || `<b>${esc(n.label)}</b><div class="row"><span>tokens</span><span>${fmt(n.value)}</span></div>`, ev);
+      })
+      .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
+      .on('mouseleave', () => { link.classed('dim', false).style('stroke-opacity', 0.38); hideTip(); })
+      .on('click', (_ev, n) => opts.onClick?.(n));
   });
 }
+
+const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+// ---------------------------------------------------------------------------- arc diagram
+
+export interface ArcNode { id: string; label: string; color: string; square?: boolean; value: number; tip: string; tick?: string }
+export interface Arc { source: string; target: string; value: number; color: string; above: boolean; group: string; tip: string }
+export interface ArcOrder { key: string; label: string; ids: string[] }
+export interface ArcGroup { key: string; label: string; color: string; sub: string }
+
+/** Nodes on one horizontal axis, arcs above and below it (width = value). An order select
+ *  re-sorts the axis with a transition. */
+export function arcDiagram(el: HTMLElement, nodes: ArcNode[], arcs: Arc[], opts: { orders: ArcOrder[]; groups: ArcGroup[]; aboveLabel: string; belowLabel: string; onClick?: (n: ArcNode) => void }): void {
+  el.innerHTML = `<div class="toolbar arc-bar"><label class="small muted" for="arc-order">order</label><select id="arc-order" class="select">${opts.orders.map((o) => `<option value="${esc(o.key)}">${esc(o.label)}</option>`).join('')}</select>
+    <span class="grow"></span>${opts.groups.map((g) => `<span class="chipk" data-g="${esc(g.key)}"><span class="k" style="background:${g.color}"></span>${esc(g.label)} <span class="muted mono">${esc(g.sub)}</span></span>`).join('')}</div><div class="arc-plot"></div>`;
+  const plot = el.querySelector<HTMLElement>('.arc-plot')!;
+  const select = el.querySelector<HTMLSelectElement>('#arc-order')!;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const valid = arcs.filter((a) => byId.has(a.source) && byId.has(a.target) && a.value > 0);
+  const wScale = d3.scaleSqrt().domain([0, d3.max(valid, (a) => a.value) || 1]).range([1, 12]);
+  const rScale = d3.scaleSqrt().domain([0, d3.max(nodes, (n) => n.value) || 1]).range([2, 7]);
+  let order = opts.orders[0];
+  let redraw: (animate: boolean) => void = () => {};
+
+  whenSized(plot, (w) => {
+    plot.innerHTML = '';
+    const lobe = 140;
+    const m = { t: 18, b: 26, l: 16, r: 16 };
+    const h = m.t + lobe * 2 + m.b;
+    const axisY = m.t + lobe;
+    const svg = d3.select(plot).append('svg').attr('viewBox', `0 0 ${w} ${h}`).attr('height', h);
+    svg.append('text').attr('class', 'lbl muted-t').attr('x', m.l).attr('y', m.t - 4).text(`▲ ${opts.aboveLabel}`);
+    svg.append('text').attr('class', 'lbl muted-t').attr('x', m.l).attr('y', h - 6).text(`▼ ${opts.belowLabel}`);
+    svg.append('line').attr('x1', m.l).attr('x2', w - m.r).attr('y1', axisY).attr('y2', axisY).style('stroke', 'var(--border)');
+    const x = d3.scalePoint<string>().range([m.l, w - m.r]).padding(0.5);
+    const path = (a: Arc): string => {
+      const x1 = x(a.source) ?? 0;
+      const x2 = x(a.target) ?? 0;
+      const rx = Math.abs(x2 - x1) / 2 || 0.5;
+      const ry = Math.min(lobe - 6, rx);
+      const sweep = a.above === x1 < x2 ? 1 : 0;
+      return `M${x1},${axisY}A${rx},${ry} 0 0,${sweep} ${x2},${axisY}`;
+    };
+    const arcSel = svg.append('g').attr('fill', 'none').selectAll<SVGPathElement, Arc>('path').data(valid).join('path')
+      .attr('class', 'link').style('stroke', (a) => a.color).style('stroke-opacity', 0.5).attr('stroke-width', (a) => wScale(a.value))
+      .on('mouseenter', (ev: MouseEvent, a) => { focus((b) => b === a); showTip(a.tip, ev); })
+      .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
+      .on('mouseleave', () => { focus(null); hideTip(); });
+    const nodeSel = svg.append('g').selectAll<SVGGElement, ArcNode>('g').data(nodes, (n) => n.id).join('g').attr('class', 'node');
+    nodeSel.filter((n) => !n.square).append('circle').attr('r', (n) => rScale(n.value)).style('fill', (n) => n.color).style('stroke', 'var(--card)').style('stroke-width', 1);
+    nodeSel.filter((n) => !!n.square).append('rect').attr('x', -6).attr('y', -6).attr('width', 12).attr('height', 12).attr('rx', 2).style('fill', 'var(--card)').style('stroke', (n) => n.color).style('stroke-width', 2.5);
+    const ticks = svg.append('g').attr('class', 'axis');
+    nodeSel
+      .on('mouseenter', (ev: MouseEvent, n) => { focus((a) => a.source === n.id || a.target === n.id); showTip(n.tip, ev); })
+      .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
+      .on('mouseleave', () => { focus(null); hideTip(); })
+      .on('click', (_ev, n) => opts.onClick?.(n));
+    function focus(pred: ((a: Arc) => boolean) | null): void {
+      arcSel.classed('dim', (a) => !!pred && !pred(a)).style('stroke-opacity', (a) => (pred && pred(a) ? 0.85 : 0.5));
+    }
+    el.querySelectorAll<HTMLElement>('.chipk').forEach((c) => {
+      c.onmouseenter = () => focus((a) => a.group === c.dataset.g);
+      c.onmouseleave = () => focus(null);
+    });
+    redraw = (animate: boolean): void => {
+      x.domain(order.ids);
+      const t = svg.transition().duration(animate ? 700 : 0).ease(d3.easeCubicInOut);
+      nodeSel.transition(t as never).attr('transform', (n) => `translate(${x(n.id) ?? -20},${axisY})`);
+      arcSel.transition(t as never).attr('d', path);
+      const every = Math.max(1, Math.ceil(order.ids.length / Math.max(1, Math.floor((w - m.l - m.r) / 38))));
+      ticks.selectAll('text').data(order.ids.filter((_id, i) => i % every === 0), (d) => d as string).join('text')
+        .attr('y', axisY + 4).attr('dy', '0.9em').attr('text-anchor', 'middle').style('font-size', '9.5px')
+        .text((id) => byId.get(id)?.tick || '')
+        .transition(t as never).attr('x', (id) => x(id) ?? -50);
+    };
+    redraw(false);
+  });
+  select.onchange = () => {
+    order = opts.orders.find((o) => o.key === select.value) || opts.orders[0];
+    redraw(true);
+  };
+}
+
+// ---------------------------------------------------------------------------- collapsible tree
+
+export interface TreeNode { id: string; label: string; color: string; value: number; tip: string; hollow?: boolean; collapsed?: boolean; children?: TreeNode[] }
+
+/** Horizontal tidy tree; click an inner node to expand or collapse it, click a leaf for onLeaf. */
+export function collapsibleTree(el: HTMLElement, data: TreeNode, opts: { onLeaf?: (n: TreeNode) => void } = {}): void {
+  const closed = new Set<string>();
+  const walk = (n: TreeNode): void => { if (n.collapsed && n.children?.length) closed.add(n.id); n.children?.forEach(walk); };
+  walk(data);
+  const maxVal = (() => { let m = 1; const v = (n: TreeNode): void => { if (!n.children?.length) m = Math.max(m, n.value); n.children?.forEach(v); }; v(data); return m; })();
+  const rScale = d3.scaleSqrt().domain([0, maxVal]).range([3, 11]);
+  const prev = new Map<string, { x: number; y: number }>();
+  let width = 0;
+  let update: (source: string | null, animate: boolean) => void = () => {};
+
+  whenSized(el, (w) => {
+    width = w;
+    el.innerHTML = '';
+    const svg = d3.select(el).append('svg');
+    const gLink = svg.append('g').attr('fill', 'none');
+    const gNode = svg.append('g');
+    const dx = 24;
+    update = (sourceId, animate) => {
+      const root = d3.hierarchy<TreeNode>(data, (d) => (closed.has(d.id) ? null : d.children));
+      const depth = Math.max(1, root.height);
+      const room = Math.min(220, Math.max(120, width * 0.16)); // left of the root for its label
+      const dy = Math.min(250, Math.max(130, (width - room - 300) / depth));
+      d3.tree<TreeNode>().nodeSize([dx, dy])(root);
+      const all = root.descendants() as D3.HierarchyPointNode<TreeNode>[];
+      const [x0, x1] = d3.extent(all, (n) => n.x) as [number, number];
+      const h = x1 - x0 + dx * 2;
+      const t = svg.transition().duration(animate ? 350 : 0);
+      svg.transition(t as never).attr('viewBox', `${-room} ${x0 - dx} ${width} ${h}`).attr('height', h);
+      const from = (sourceId && prev.get(sourceId)) || { x: root.x ?? 0, y: 0 };
+      const nodeSel = gNode.selectAll<SVGGElement, D3.HierarchyPointNode<TreeNode>>('g').data(all, (n) => n.data.id);
+      const enter = nodeSel.enter().append('g').attr('class', 'node').attr('transform', `translate(${from.y},${from.x})`).style('opacity', 0)
+        .on('mouseenter', (ev: MouseEvent, n) => showTip(n.data.tip, ev))
+        .on('mousemove', (ev: MouseEvent) => showTip(null, ev))
+        .on('mouseleave', hideTip)
+        .on('click', (_ev, n) => {
+          if (n.data.children?.length) {
+            if (closed.has(n.data.id)) closed.delete(n.data.id);
+            else closed.add(n.data.id);
+            update(n.data.id, true);
+          } else opts.onLeaf?.(n.data);
+        });
+      enter.append('circle');
+      enter.append('text').attr('class', 'lbl').attr('dy', '0.32em');
+      const merged = enter.merge(nodeSel);
+      merged.select('circle').attr('r', (n) => (n.data.children?.length ? 5.5 : rScale(n.data.value)))
+        .style('fill', (n) => (n.data.hollow ? 'var(--card)' : closed.has(n.data.id) ? 'var(--card)' : n.data.color))
+        .style('stroke', (n) => n.data.color).style('stroke-width', (n) => (closed.has(n.data.id) ? 2.5 : 1.5))
+        .style('opacity', (n) => (n.data.hollow ? 0.6 : 1));
+      merged.select('text')
+        .attr('x', (n) => (n.data.children?.length ? -10 : rScale(n.data.value) + 6))
+        .attr('text-anchor', (n) => (n.data.children?.length ? 'end' : 'start'))
+        .style('opacity', (n) => (n.data.hollow ? 0.6 : 1))
+        .text((n) => `${clip(n.data.label, 44)}${n.data.value ? ` · ${fmtKk(n.data.value)}` : ''}${closed.has(n.data.id) ? ` (+${n.data.children!.length})` : ''}`);
+      merged.transition(t as never).attr('transform', (n) => `translate(${n.y},${n.x})`).style('opacity', 1);
+      nodeSel.exit().transition(t as never).remove().attr('transform', () => { const p = root.find((n) => n.data.id === sourceId); return `translate(${p?.y ?? 0},${p?.x ?? 0})`; }).style('opacity', 0);
+
+      const links = root.links() as Array<D3.HierarchyPointLink<TreeNode>>;
+      const diag = d3.linkHorizontal<unknown, { x: number; y: number }>().x((p) => p.y).y((p) => p.x);
+      const linkSel = gLink.selectAll<SVGPathElement, D3.HierarchyPointLink<TreeNode>>('path').data(links, (l) => l.target.data.id);
+      linkSel.enter().append('path').attr('class', 'link').style('stroke', 'var(--muted-foreground)').style('stroke-opacity', 0.35).attr('stroke-width', 1.2)
+        .attr('d', () => diag({ source: from, target: from } as never)!)
+        .merge(linkSel)
+        .transition(t as never).attr('d', (l) => diag({ source: { x: l.source.x, y: l.source.y }, target: { x: l.target.x, y: l.target.y } } as never)!);
+      linkSel.exit().transition(t as never).remove().attr('d', () => { const p = root.find((n) => n.data.id === sourceId); const q = { x: p?.x ?? 0, y: p?.y ?? 0 }; return diag({ source: q, target: q } as never)!; });
+      prev.clear();
+      for (const n of all) prev.set(n.data.id, { x: n.x, y: n.y });
+    };
+    update(null, false);
+  });
+}
+
+// ---------------------------------------------------------------------------- presence heatmap
+
+export interface HeatRow { id: string; label: string; color: string; sub?: string }
+export interface HeatCol { id: string; seq: number; mark?: boolean; selected?: boolean }
+
+/** Rows × steps heatmap on a canvas (sessions can have hundreds of steps); empty cells stay blank. */
+export function presenceHeatmap(el: HTMLElement, rows: HeatRow[], cols: HeatCol[], value: (r: number, c: number) => number, opts: { tip: (r: number, c: number, v: number) => string; onCell?: (r: number, c: number) => void; markLabel: string }): void {
+  const rh = 18;
+  el.innerHTML = `<div class="heat"><div class="heat-rows">${rows.map((r) => `<div class="heat-row" title="${esc(r.sub || r.label)}"><span class="k" style="background:${r.color}"></span>${esc(r.label)}</div>`).join('')}<div class="heat-row axis-pad"></div></div><div class="heat-scroll"><canvas></canvas><svg class="heat-axis"></svg></div></div>
+    <div class="heat-key small muted"><span>fewer tokens</span><span class="ramp"></span><span>more</span><span class="sep"></span><span class="markk"></span>${esc(opts.markLabel)}<span class="sep"></span><span class="selk"></span>selected step · click a cell to open that step</div>`;
+  const scroll = el.querySelector<HTMLElement>('.heat-scroll')!;
+  const canvas = el.querySelector('canvas')!;
+  const axis = el.querySelector<SVGSVGElement>('.heat-axis')!;
+  let max = 1;
+  for (let r = 0; r < rows.length; r++) for (let c = 0; c < cols.length; c++) max = Math.max(max, value(r, c));
+  const t = d3.scaleSqrt().domain([0, max]).range([0.18, 1]);
+  whenSized(scroll, (w) => {
+    const cw = Math.max(4, Math.floor(w / Math.max(1, cols.length)));
+    const W = cw * cols.length;
+    const H = rh * rows.length;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = `${W}px`;
+    canvas.style.height = `${H}px`;
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(dpr, dpr);
+    const lo = cssVar('--muted-bg') || '#f4f4f5';
+    const hi = cssVar('--hl') || '#2563eb';
+    const color = d3.interpolateRgb(lo, hi);
+    el.querySelector<HTMLElement>('.ramp')!.style.background = `linear-gradient(90deg, ${color(0.18)}, ${color(1)})`;
+    ctx.strokeStyle = cssVar('--border') || '#e4e4e7';
+    for (let r = 0; r <= rows.length; r++) { ctx.beginPath(); ctx.moveTo(0, r * rh + 0.5); ctx.lineTo(W, r * rh + 0.5); ctx.globalAlpha = 0.5; ctx.stroke(); }
+    ctx.globalAlpha = 1;
+    cols.forEach((col, c) => {
+      if (col.mark) { ctx.fillStyle = '#e11d4833'; ctx.fillRect(c * cw, 0, cw, H); }
+      for (let r = 0; r < rows.length; r++) {
+        const v = value(r, c);
+        if (v <= 0) continue;
+        ctx.fillStyle = color(t(v));
+        ctx.fillRect(c * cw + (cw > 5 ? 0.5 : 0), r * rh + 2, cw - (cw > 5 ? 1 : 0), rh - 4);
+      }
+    });
+    const sel = cols.findIndex((c) => c.selected);
+    if (sel >= 0) { ctx.strokeStyle = hi; ctx.lineWidth = 1.5; ctx.strokeRect(sel * cw + 0.75, 0.75, cw - 1.5, H - 1.5); }
+    const every = Math.max(1, Math.ceil(46 / cw));
+    d3.select(axis).attr('width', W).attr('height', 22).attr('viewBox', `0 0 ${W} 22`)
+      .selectAll('text').data(cols.map((c, i) => ({ c, i })).filter((d) => d.i % every === 0)).join('text')
+      .attr('x', (d) => d.i * cw + cw / 2).attr('y', 14).attr('text-anchor', 'middle').style('font-size', '10px').style('fill', 'var(--muted-foreground)')
+      .text((d) => `#${d.c.seq}`);
+    if (sel >= 0 && scroll.scrollWidth > scroll.clientWidth) scroll.scrollLeft = Math.max(0, sel * cw - scroll.clientWidth / 2);
+    const at = (ev: MouseEvent): [number, number] => {
+      const b = canvas.getBoundingClientRect();
+      return [Math.floor((ev.clientY - b.top) / rh), Math.floor((ev.clientX - b.left) / cw)];
+    };
+    canvas.onmousemove = (ev) => {
+      const [r, c] = at(ev);
+      if (r < 0 || r >= rows.length || c < 0 || c >= cols.length) return hideTip();
+      showTip(opts.tip(r, c, value(r, c)), ev);
+    };
+    canvas.onmouseleave = hideTip;
+    canvas.onclick = (ev) => {
+      const [r, c] = at(ev);
+      if (r >= 0 && r < rows.length && c >= 0 && c < cols.length) opts.onCell?.(r, c);
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------- session timeline
+
+export interface TLStep { id: string; seq: number; label: string; layers: Record<string, number>; prompt: number; cacheRead: number; selected?: boolean }
+export interface TLSide { id: string; seq: number; label: string; after: number }
+
+/** Stacked area of context by kind over the agent turns, with a cache difference panel below that
+ *  shares the x axis. Wheel / drag zooms both; a crosshair reads out every layer; click opens a step. */
+export function sessionTimeline(el: HTMLElement, steps: TLStep[], sides: TLSide[], keys: Slice[], opts: { onClick: (id: string) => void }): void {
+  if (!steps.length) {
+    el.innerHTML = '<div class="empty">No completed agent turns in this session yet.</div>';
+    return;
+  }
+  whenSized(el, (w) => {
+    el.innerHTML = '';
+    const m = { t: 8, r: 14, b: 22, l: 48 };
+    const h1 = 230;
+    const gap = 46;
+    const h2 = 120;
+    const H = m.t + h1 + gap + h2 + m.b;
+    const svg = d3.select(el).append('svg').attr('viewBox', `0 0 ${w} ${H}`).attr('height', H);
+    const clipId = `tl-clip-${Math.random().toString(36).slice(2, 8)}`;
+    svg.append('clipPath').attr('id', clipId).append('rect').attr('x', m.l).attr('y', 0).attr('width', w - m.l - m.r).attr('height', H);
+    const n = steps.length;
+    const x = d3.scaleLinear().domain([0, Math.max(1, n - 1)]).range([m.l, w - m.r]);
+    const stack = d3.stack<TLStep>().keys(keys.map((k) => k.key)).value((d, k) => d.layers[k] || 0);
+    const series = stack(steps);
+    const y1 = d3.scaleLinear().domain([0, d3.max(series.at(-1) || [], (d) => d[1]) || 1]).nice().range([m.t + h1, m.t]);
+    const top2 = m.t + h1 + gap;
+    const y2 = d3.scaleLinear().domain([0, d3.max(steps, (s) => s.prompt) || 1]).nice().range([top2 + h2, top2]);
+    const colorOf = new Map(keys.map((k) => [k.key, k.color]));
+    const labelOf = new Map(keys.map((k) => [k.key, k.label]));
+
+    const gx1 = svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${m.t + h1})`);
+    const gx2 = svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${top2 + h2})`);
+    svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y1).ticks(5).tickFormat((v) => fmtKk(Number(v))).tickSize(-(w - m.l - m.r)))
+      .call((g) => g.select('.domain').remove()).call((g) => g.selectAll('.tick line').style('stroke-opacity', 0.45));
+    svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y2).ticks(3).tickFormat((v) => fmtKk(Number(v))).tickSize(-(w - m.l - m.r)))
+      .call((g) => g.select('.domain').remove()).call((g) => g.selectAll('.tick line').style('stroke-opacity', 0.45));
+    svg.append('text').attr('class', 'lbl muted-t').attr('x', m.l).attr('y', top2 - 10).text('cache: read (green) vs. missed = written + uncached (amber) · line = prompt total');
+
+    const plot = svg.append('g').attr('clip-path', `url(#${clipId})`);
+    const layers = plot.append('g').selectAll('path').data(series).join('path').style('fill', (s) => colorOf.get(s.key) || '#94a3b8').style('stroke', 'none').style('fill-opacity', 0.9);
+    const readArea = plot.append('path').style('fill', kindTint('#16a34a')).style('stroke', 'none');
+    const missArea = plot.append('path').style('fill', kindTint('#d97706')).style('stroke', 'none');
+    const promptLine = plot.append('path').style('fill', 'none').style('stroke', 'var(--foreground)').style('stroke-width', 1.2);
+    const sideTicks = plot.append('g').selectAll('line').data(sides).join('line').style('stroke', 'var(--muted-foreground)').style('stroke-width', 1.5)
+      .attr('y1', m.t + h1 - 6).attr('y2', m.t + h1);
+    const sel = steps.findIndex((s) => s.selected);
+    const selLine = plot.append('line').style('stroke', 'var(--hl)').style('stroke-width', 1.5).attr('y1', m.t).attr('y2', top2 + h2).style('display', sel >= 0 ? 'inline' : 'none');
+    const cross = svg.append('line').style('stroke', 'var(--foreground)').style('stroke-opacity', 0.5).style('stroke-dasharray', '3 3').attr('y1', m.t).attr('y2', top2 + h2).style('display', 'none').style('pointer-events', 'none');
+
+    let xz = x;
+    const draw = (): void => {
+      const area = d3.area<D3.SeriesPoint<TLStep>>().x((_d, i) => xz(i)).y0((d) => y1(d[0])).y1((d) => y1(d[1]));
+      layers.attr('d', (s) => area(s));
+      readArea.attr('d', d3.area<TLStep>().x((_d, i) => xz(i)).y0(y2(0)).y1((s) => y2(s.cacheRead))(steps));
+      missArea.attr('d', d3.area<TLStep>().x((_d, i) => xz(i)).y0((s) => y2(s.cacheRead)).y1((s) => y2(s.prompt))(steps));
+      promptLine.attr('d', d3.line<TLStep>().x((_d, i) => xz(i)).y((s) => y2(s.prompt))(steps));
+      sideTicks.attr('x1', (s) => xz(s.after + 0.5)).attr('x2', (s) => xz(s.after + 0.5));
+      if (sel >= 0) selLine.attr('x1', xz(sel)).attr('x2', xz(sel));
+      const [a, b] = xz.domain();
+      const ticks = xz.ticks(Math.max(2, Math.floor((w - m.l) / 70))).filter((v) => Number.isInteger(v) && v >= Math.max(0, a) && v <= Math.min(n - 1, b));
+      const ax = d3.axisBottom(xz).tickValues(ticks).tickFormat((v) => `#${steps[Number(v)]?.seq ?? ''}`).tickSize(3);
+      gx1.call(ax).call((g) => g.select('.domain').remove());
+      gx2.call(ax).call((g) => g.select('.domain').remove());
+    };
+    draw();
+
+    const overlay = svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', w - m.l - m.r).attr('height', top2 + h2 - m.t).style('fill', 'transparent').style('cursor', 'crosshair');
+    const zoom = d3.zoom<SVGRectElement, unknown>().scaleExtent([1, Math.max(1, n / 6)]).extent([[m.l, 0], [w - m.r, H]]).translateExtent([[m.l, 0], [w - m.r, H]])
+      .on('zoom', (ev: D3.D3ZoomEvent<SVGRectElement, unknown>) => { xz = ev.transform.rescaleX(x); draw(); });
+    overlay.call(zoom).on('dblclick.zoom', null).on('dblclick', () => overlay.transition().duration(300).call(zoom.transform, d3.zoomIdentity));
+    const nearest = (ev: MouseEvent): number => Math.max(0, Math.min(n - 1, Math.round(xz.invert(d3.pointer(ev, svg.node())[0]))));
+    overlay
+      .on('pointermove', (ev: PointerEvent) => {
+        const i = nearest(ev);
+        const s = steps[i];
+        cross.style('display', null).attr('x1', xz(i)).attr('x2', xz(i));
+        const rows = Object.entries(s.layers).filter(([, v]) => v > 0).sort((p, q) => q[1] - p[1]).slice(0, 8)
+          .map(([k, v]) => `<div class="row"><span><span class="k" style="background:${colorOf.get(k) || '#94a3b8'}"></span>${esc(labelOf.get(k) || k)}</span><span>${fmt(v)}</span></div>`).join('');
+        const miss = Math.max(0, s.prompt - s.cacheRead);
+        showTip(`<b>#${s.seq} ${esc(s.label)}</b>${rows}<div class="row" style="border-top:1px solid var(--border);margin-top:3px;padding-top:3px"><span>prompt (server)</span><span>${fmt(s.prompt)}</span></div><div class="row"><span>cache read</span><span>${fmt(s.cacheRead)}</span></div><div class="row"><span>cache missed</span><span>${fmt(miss)} · ${s.prompt ? ((100 * miss) / s.prompt).toFixed(0) : 0}%</span></div><div class="muted small">click to open · wheel to zoom · double-click to reset</div>`, ev);
+      })
+      .on('pointerleave', () => { cross.style('display', 'none'); hideTip(); })
+      .on('click', (ev: MouseEvent) => { hideTip(); opts.onClick(steps[nearest(ev)].id); });
+  });
+}
+
+const kindTint = (hex: string): string => `color-mix(in srgb, ${hex} 55%, transparent)`;
