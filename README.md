@@ -194,11 +194,22 @@ token-inspectour [projectDir] [options] [-- claude args…]
 
 All data stays on the local machine. The proxy listens on `127.0.0.1` only and forwards to the configured upstream API.
 
-- **Captures:** stored in `~/.token-inspectour/captures/<session>/`, one JSON file per call. They contain prompts, file contents as sent to the model, and model replies; treat the directory as a transcript.
+- **Captures:** stored in `~/.token-inspectour/captures/<session>/`, one JSON file per call, alongside an `index.jsonl` of their summaries. They contain prompts, file contents as sent to the model, and model replies; treat the directory as a transcript.
 - **Credentials:** authorization headers are redacted before anything is written. Live auth headers are held in memory only, for count_tokens calls.
 - **Logs:** in launch mode, the inspector's log goes to `~/.token-inspectour/logs/`.
 
 Set `TOKEN_INSPECTOUR_HOME` to relocate all stored data. Use `--no-persist` to store nothing.
+
+Captures accumulate: each turn of a session resends the whole conversation, so a long session
+costs more on disk than a short one. Resident memory does not follow. Start-up reads each
+session's `index.jsonl`, keeping one summary per call; full records are read back from their
+capture files on demand and held in a cache bounded by `TOKEN_INSPECTOUR_CACHE_MB` (default
+128). Deleting a session directory, or all of `captures/`, is safe at any time; `--clear` does
+it on start. An `index.jsonl` that is missing, stale, or truncated is rebuilt from the capture
+files next to it.
+
+With `--no-persist` there are no capture files to read back from, so every record stays in
+memory for as long as the process runs.
 
 ## Compatibility and limitations
 

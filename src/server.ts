@@ -118,11 +118,11 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }: { port: number;
       if ((m = /^\/api\/sessions\/([A-Za-z0-9_-]+)\/graph$/.exec(p))) {
         const sess = ctx.store.sessions.get(m[1]);
         if (!sess) return json(res, 404, { error: 'not found' });
-        const recs = sess.requests.map((id) => ctx.store.get(id)).filter((r): r is CaptureRecord => !!r);
         const inv = ctx.inventory(sess.projectDir || undefined);
         const servers = new Set<string>();
         for (const s of inv.sources) for (const v of s.servers || []) servers.add(v.sanitized);
-        return json(res, 200, buildFlowGraph(sess.id, recs, servers));
+        // records are read back one at a time: a session's captures do not have to fit in memory at once
+        return json(res, 200, buildFlowGraph(sess.id, (filter) => ctx.store.records(sess.id, filter), servers));
       }
       if ((m = /^\/api\/requests\/([A-Za-z0-9]+)\/graph$/.exec(p))) {
         const rec = ctx.store.get(m[1]);

@@ -17,6 +17,15 @@ export function readTextSafe(p: string, max = 4 * 1024 * 1024): string | null {
   }
 }
 
+/** Read a whole file. Capture records routinely exceed readTextSafe's cap, which truncates. */
+export function readFileSafe(p: string): string | null {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 export function readJsonSafe<T = unknown>(p: string): T | null {
   const t = readTextSafe(p);
   if (t == null) return null;

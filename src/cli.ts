@@ -185,16 +185,15 @@ export async function main(argv: string[]): Promise<void> {
     return null;
   };
 
+  // The turn a request is diffed against: the session's last analysed agent turn before it.
+  // Found in the resident index, so only that one record is read back.
   const prevMain = (rec: CaptureRecord): CaptureRecord | null => {
-    const s = store.sessions.get(rec.sessionId);
-    if (!s) return null;
-    let prev: CaptureRecord | null = null;
-    for (const rid of s.requests) {
-      if (rid === rec.id) break;
-      const r = store.get(rid);
-      if (r && r.analysis && r.analysis.kind === 'main') prev = r;
+    let prevId: string | null = null;
+    for (const s of store.summaries(rec.sessionId)) {
+      if (s.id === rec.id) break;
+      if (s.analysis && (s.kind || '').startsWith('main')) prevId = s.id;
     }
-    return prev;
+    return prevId ? store.get(prevId) : null;
   };
 
   const analyze = async (rec: CaptureRecord, opts: { exact?: boolean; force?: boolean } = {}): Promise<void> => {
@@ -225,17 +224,8 @@ export async function main(argv: string[]): Promise<void> {
       cap.projectDir = ok ? detected! : sess && sess.projectDir ? sess.projectDir : o.projectDir;
       cap.projectDetected = ok;
       if (ok && !inventories.has(path.resolve(detected!))) log(`detected project: ${detected}`);
-      if (ok && sess && sess.projectDir !== detected) {
-        // the session was opened by a side call (no environment info); re-point it and its earlier calls
-        sess.projectDir = detected!;
-        for (const rid of sess.requests) {
-          const r = store.get(rid);
-          if (r && !r.projectDetected && r.projectDir !== detected) {
-            r.projectDir = detected!;
-            store.save(r);
-          }
-        }
-      }
+      // the session was opened by a side call (no environment info); re-point it and its earlier calls
+      if (ok && sess && sess.projectDir !== detected) store.repointProject(sess.id, detected!);
       const cls = classifyRequest(cap.body);
       cap.kind = cls.kind + (cls.kind === 'side' ? `:${cls.label}` : '');
       cap.userPreview = preview(lastUserText(cap.body));

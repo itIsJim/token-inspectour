@@ -33,22 +33,36 @@ export function callKind(name: string, input: Record<string, unknown>, mcpServer
   return { kind: 'harness-tool' };
 }
 
-export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpServers: Set<string> = new Set()): GraphData {
+/** A session's records, either in hand or re-read on demand so a long session never has to fit in
+ *  memory. A source that reads on demand is given the pass's filter, so it can skip records whole. */
+export type RecordFilter = (r: { kind?: string }) => boolean;
+export type RecordSource = readonly CaptureRecord[] | ((filter?: RecordFilter) => Iterable<CaptureRecord>);
+
+export function buildFlowGraph(sessionId: string, records: RecordSource, mcpServers: Set<string> = new Set()): GraphData {
   const nodes: GraphNode[] = [];
+  const nodeById = new Map<string, GraphNode>();
+  const addNode = (node: GraphNode): void => {
+    nodes.push(node);
+    nodeById.set(node.data.id, node);
+  };
   const edges: GraphEdge[] = [];
   const stats = { turns: 0, sideCalls: 0, calls: 0, promptTokens: 0, outputTokens: 0 };
   let prevTurn: string | null = null;
   let pendingCalls: Array<{ id: string; toolUseId: string }> = [];
   let firstTurn: string | null = null;
   const orphanSides: string[] = [];
+  const each = (filter?: RecordFilter): Iterable<CaptureRecord> =>
+    typeof records === 'function' ? records(filter) : filter ? records.filter(filter) : records;
   // a subagent instance's first message contains the prompt its Agent call was given
-  const subagentThreads = records.filter((r) => /^main:subagent/.test(r.kind || '')).map((r) => ({ text: firstMessageText(r), thread: threadKey(r) }));
+  const isSubagent: RecordFilter = (r) => /^main:subagent/.test(r.kind || '');
+  const subagentThreads: Array<{ text: string; thread: string | null }> = [];
+  for (const r of each(isSubagent)) subagentThreads.push({ text: firstMessageText(r), thread: threadKey(r) });
   const threadForPrompt = (prompt: unknown): string | undefined => {
     const p = typeof prompt === 'string' ? prompt.trim().slice(0, 400) : '';
     return p ? subagentThreads.find((t) => t.thread && t.text.includes(p))?.thread || undefined : undefined;
   };
 
-  for (const rec of records) {
+  for (const rec of each()) {
     const a = rec.analysis;
     const isMain = (rec.kind || '').startsWith('main');
     const nodeId = `req:${rec.id}`;
@@ -58,7 +72,7 @@ export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpS
     if (!isMain) {
       stats.sideCalls++;
       const label = (rec.kind || 'side').replace(/^side:/, '');
-      nodes.push({ data: { id: nodeId, label, kind: 'side', sub: rec.model || '', tokens, tokensOut: out, ref: { type: 'request', id: rec.id }, detail: { seq: rec.seq, status: rec.status, durationMs: rec.durationMs } } });
+      addNode({ data: { id: nodeId, label, kind: 'side', sub: rec.model || '', tokens, tokensOut: out, ref: { type: 'request', id: rec.id }, detail: { seq: rec.seq, status: rec.status, durationMs: rec.durationMs } } });
       if (prevTurn) edges.push({ data: { id: `e:${prevTurn}>${nodeId}`, source: prevTurn, target: nodeId, kind: 'side', tokens } });
       else orphanSides.push(nodeId);
       continue;
@@ -70,7 +84,7 @@ export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpS
     const isSub = !!a && /^subagent/.test(a.label);
     const label = isSub ? `#${rec.seq} ${a!.label}` : `#${rec.seq} turn`;
     const u = rec.response?.usage;
-    nodes.push({
+    addNode({
       data: {
         id: nodeId, label, kind: isSub ? 'agent' : 'turn',
         sub: [rec.model || '', rec.response?.stop_reason || (rec.status == null ? 'in flight' : ''), rec.userPreview ? `“${rec.userPreview.slice(0, 60)}${rec.userPreview.length > 60 ? '…' : ''}”` : ''].filter(Boolean).join(' · '),
@@ -92,7 +106,7 @@ export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpS
       const t = resPart?.tokens;
       edges.push({ data: { id: `e:${c.id}>${nodeId}`, source: c.id, target: nodeId, kind: 'result', tokens: t, label: t != null ? `${fmtK(t)} back` : undefined } });
       if (resPart) {
-        const n = nodes.find((x) => x.data.id === c.id);
+        const n = nodeById.get(c.id);
         if (n) n.data.detail = { ...n.data.detail, resultTokens: t, resultPreview: resPart.text.slice(0, 400), isError: resPart.isError };
       }
     }
@@ -117,10 +131,10 @@ export function buildFlowGraph(sessionId: string, records: CaptureRecord[], mcpS
       let parent: string | undefined;
       if (server && (byServer.get(server) || 0) > 1) {
         parent = `grp:${rec.id}:${server}`;
-        if (!nodes.some((n) => n.data.id === parent)) nodes.push({ data: { id: parent, label: `MCP · ${server}`, kind: 'group' } });
+        if (!nodeById.has(parent)) addNode({ data: { id: parent, label: `MCP · ${server}`, kind: 'group' } });
       }
       const tokens = estimateJson(c.input);
-      nodes.push({
+      addNode({
         data: {
           id: callId, label: describeInput(c.name, c.input), kind, parent, tokens,
           sub: server ? `mcp · ${server}` : KINDS[kind as SourceKind]?.label || kind,
