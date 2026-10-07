@@ -16,6 +16,7 @@
 - Capture, log, and cache files are created owner-only (`0700` directories, `0600` files); `set-cookie` headers are redacted.
 - Windows: `claude` launches through its `.cmd` shim and the browser opens with `rundll32`; a missing browser opener no longer crashes the process.
 - The npm package includes the compiled UI modules (`dist/ui`).
+- Launch mode starts `claude` with `ENABLE_TOOL_SEARCH=true` unless the variable is set, so MCP tool search stays on behind the proxy as in a direct session.
 - README documents single-request measurement, other API clients, recipes, the JSON API, the tool-search behaviour behind a custom base URL, what `count_tokens` numbers mean, supported setups, references, third-party licenses, and a trademark notice.
 
 ## 0.1.0 (2026-09-09)

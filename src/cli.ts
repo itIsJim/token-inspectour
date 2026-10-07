@@ -43,7 +43,10 @@ Examples:
   token-inspectour path/to/agent-b                   # terminal 2: second agent + a second UI
   token-inspectour path/to/agent-a -- -p "<prompt>"  # one headless prompt through the proxy
   token-inspectour --proxy-only -p 4141               # plain proxy; attach agents manually:
-      ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
+      ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
+
+  Claude Code turns off MCP tool search behind a custom ANTHROPIC_BASE_URL. The launched claude
+  gets ENABLE_TOOL_SEARCH=true unless it is already set, so captures match a direct session.
 `;
 
 export interface Options {
@@ -84,6 +87,13 @@ export function parseArgs(argv: string[]): Options {
     else o.projectDir = path.resolve(a);
   }
   return o;
+}
+
+// Environment for the launched claude: route it through the proxy, and keep MCP tool search on,
+// which Claude Code otherwise disables for a custom ANTHROPIC_BASE_URL. An explicit
+// ENABLE_TOOL_SEARCH in the caller's environment wins.
+export function claudeEnv(env: NodeJS.ProcessEnv, baseUrl: string): NodeJS.ProcessEnv {
+  return { ...env, ANTHROPIC_BASE_URL: baseUrl, ENABLE_TOOL_SEARCH: env.ENABLE_TOOL_SEARCH ?? 'true' };
 }
 
 export function slugify(name: string | null | undefined): string {
@@ -282,8 +292,8 @@ ${launching ? `  log       ${logFile || '(not persisted)'}
   token-inspectour again for a second agent; it will take the next free ports.
 ` : `
   Attach agents manually; the path segment names the agent in the UI:
-    cd ${o.projectDir} && ANTHROPIC_BASE_URL=${baseUrl} claude
-    cd /other/agent && ANTHROPIC_BASE_URL=${proxy.url}/other-agent claude
+    cd ${o.projectDir} && ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=${baseUrl} claude
+    cd /other/agent && ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=${proxy.url}/other-agent claude
 `}
 `);
   if (o.open) openBrowser(ui.uiUrl);
@@ -292,7 +302,7 @@ ${launching ? `  log       ${logFile || '(not persisted)'}
     // On Windows an npm-installed claude is a .cmd shim, which only runs through the shell.
     const win = process.platform === 'win32';
     const args = win ? o.run.map((a) => `"${a.replace(/"/g, '""')}"`) : o.run;
-    const child = spawn('claude', args, { cwd: o.projectDir, stdio: 'inherit', shell: win, env: { ...process.env, ANTHROPIC_BASE_URL: baseUrl } });
+    const child = spawn('claude', args, { cwd: o.projectDir, stdio: 'inherit', shell: win, env: claudeEnv(process.env, baseUrl) });
     child.on('error', (e) => {
       process.stderr.write(`could not launch claude: ${e.message}\n`);
     });

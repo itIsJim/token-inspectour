@@ -46,7 +46,7 @@ Launch Claude Code in a project through the inspector:
 node bin/token-inspectour.js path/to/project
 ```
 
-This starts the proxy and the UI, opens the UI in the default browser, and runs `claude` in the project through the proxy, in the current terminal. Each API call appears in the UI as it happens. After Claude Code exits, the UI keeps serving until Ctrl-C.
+This starts the proxy and the UI, opens the UI in the default browser, and runs `claude` in the project through the proxy, in the current terminal. Each API call appears in the UI as it happens. After Claude Code exits, the UI keeps serving until Ctrl-C. The launched `claude` gets `ENABLE_TOOL_SEARCH=true` unless the variable is already set (see [Tool search](#compatibility-and-limitations)).
 
 Pass arguments to `claude` after `--`:
 
@@ -79,8 +79,8 @@ node bin/token-inspectour.js --proxy-only -p 4141
 Then, from each project directory:
 
 ```sh
-ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
-ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-b claude
+ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
+ENABLE_TOOL_SEARCH=true ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-b claude
 ```
 
 The path segment after the port names the agent. The proxy strips it before forwarding and records it on every capture, so one UI lists both agents' sessions, labelled.
@@ -281,7 +281,7 @@ memory for as long as the process runs.
 
 - Developed and tested against Claude Code 2.1.x on macOS. Linux and Windows are handled in the code (browser opening, launching `claude` through the `.cmd` shim on Windows) but untested. Attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, affected spans fall back to `harness` or `reminder` until the patterns in `src/analyze.ts` are updated.
 - Claude Code must honour `ANTHROPIC_BASE_URL`. Organizations can pin it through managed settings (`allowedProviders`), which makes Claude Code refuse a local proxy. To chain an existing gateway, pass it with `--upstream`.
-- **Tool search.** Claude Code turns off MCP tool search when `ANTHROPIC_BASE_URL` points to a host other than the Anthropic API, so every MCP tool definition is sent in full and no `ToolSearch` calls appear. Captures made through the proxy therefore show more tool tokens than the same session without it. Set `ENABLE_TOOL_SEARCH=true` in the environment of `claude` to keep tool search on; the proxy forwards request bodies and headers unchanged, including `tool_reference` blocks.
+- **Tool search.** Claude Code turns off MCP tool search when `ANTHROPIC_BASE_URL` points to a host other than the Anthropic API ([MCP documentation](https://code.claude.com/docs/en/mcp)); every MCP tool definition is then sent in full, and the request can be several times larger than in a direct session. `ENABLE_TOOL_SEARCH=true` keeps tool search on, and the proxy forwards request bodies and headers unchanged, including `tool_reference` blocks. Launch mode sets it for the `claude` it starts unless the variable is already set; in proxy-only mode, set it in the environment of `claude` as shown above. Set `ENABLE_TOOL_SEARCH=false` to capture the full tool list instead.
 - The UI is two framework-free pages (`ui/index.html`, `ui/graph.html`) with compiled modules and vendored libraries. Browser coverage beyond recent Chromium-based browsers is untested.
 
 ## Development

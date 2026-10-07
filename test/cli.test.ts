@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import net from 'node:net';
-import { parseArgs, freePort, slugify } from '../src/cli.js';
+import { parseArgs, freePort, slugify, claudeEnv } from '../src/cli.js';
 import { splitAgentPrefix, sessionIdFor } from '../src/proxy.js';
 
 test('launching claude is the default; -- and --run pass args through; --proxy-only disables', () => {
@@ -69,4 +69,13 @@ test('only loopback hosts and same-site browser requests are served', async () =
   assert.equal(isLocalRequest({}), false);
   const r = redactHeaders({ authorization: 'Bearer x', 'x-api-key': 'k', 'set-cookie': ['a=b'], 'anthropic-version': '2023-06-01' });
   assert.deepEqual(r, { authorization: '<redacted>', 'x-api-key': '<redacted>', 'set-cookie': '<redacted>', 'anthropic-version': '2023-06-01' });
+});
+
+test('the launched claude goes through the proxy with tool search on unless set explicitly', () => {
+  const e = claudeEnv({ PATH: '/bin' }, 'http://127.0.0.1:4141/agent-a');
+  assert.equal(e.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4141/agent-a');
+  assert.equal(e.ENABLE_TOOL_SEARCH, 'true');
+  assert.equal(e.PATH, '/bin');
+  assert.equal(claudeEnv({ ENABLE_TOOL_SEARCH: 'false' }, 'x').ENABLE_TOOL_SEARCH, 'false');
+  assert.equal(claudeEnv({ ENABLE_TOOL_SEARCH: 'auto:5' }, 'x').ENABLE_TOOL_SEARCH, 'auto:5');
 });
