@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import net from 'node:net';
 import { parseArgs, freePort, slugify } from '../src/cli.js';
-import { splitAgentPrefix } from '../src/proxy.js';
+import { splitAgentPrefix, sessionIdFor } from '../src/proxy.js';
 
 test('launching claude is the default; -- and --run pass args through; --proxy-only disables', () => {
   const d = parseArgs([]);
@@ -43,4 +43,17 @@ test('agent names become route slugs; the proxy strips the agent prefix', () => 
   assert.deepEqual(splitAgentPrefix('/v1/messages?beta=true'), { agent: null, path: '/v1/messages?beta=true' });
   assert.deepEqual(splitAgentPrefix('/api/hello'), { agent: null, path: '/api/hello' });
   assert.deepEqual(splitAgentPrefix('/agent.b/api/hello'), { agent: 'agent.b', path: '/api/hello' });
+});
+
+test('sessions: Claude Code metadata, then the session header, then agent and first message', () => {
+  const body = { model: 'm', messages: [{ role: 'user' as const, content: 'hello' }] };
+  assert.equal(sessionIdFor(body, { session_id: 'abc' }, 'run-1', 'agent-a'), 'abc');
+  assert.equal(sessionIdFor(body, {}, 'run 1/../x', 'agent-a'), 'run-1-x');
+  const a = sessionIdFor(body, {}, undefined, 'agent-a');
+  assert.match(a, /^agent-a-[0-9a-f]{12}$/);
+  const next = { model: 'm', messages: [...body.messages, { role: 'assistant' as const, content: 'hi' }, { role: 'user' as const, content: 'again' }] };
+  assert.equal(sessionIdFor(next, {}, undefined, 'agent-a'), a);
+  assert.notEqual(sessionIdFor({ model: 'm', messages: [{ role: 'user' as const, content: 'other' }] }, {}, undefined, 'agent-a'), a);
+  assert.match(sessionIdFor(body, {}, undefined, null), /^client-/);
+  assert.equal(sessionIdFor(null, {}, undefined, 'agent-a'), 'unknown');
 });

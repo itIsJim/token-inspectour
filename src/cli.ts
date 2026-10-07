@@ -33,7 +33,7 @@ Usage: token-inspectour [projectDir] [options] [-- claude args…]
   -u, --ui <n>          UI port    (default: the port after the proxy port)
   --upstream <url>      Real API base URL (default https://api.anthropic.com)
   --no-open             Do not open the UI in the browser
-  --no-count            Skip exact token counting (estimates only; no count_tokens calls)
+  --no-count            Skip count_tokens calls (local estimates only)
   --no-persist          Do not write captures to ~/.token-inspectour
   --clear               Delete previously captured sessions on start
   -h, --help            Show this help
@@ -275,7 +275,7 @@ export async function main(argv: string[]): Promise<void> {
   project   ${o.projectDir}
   proxy     ${baseUrl}  →  ${o.upstream}
   UI        ${ui.uiUrl}
-  counting  ${o.count ? 'exact via count_tokens (after the first captured request)' : 'estimates only'}
+  counting  ${o.count ? 'count_tokens (after the first captured request)' : 'estimates only'}
 ${launching ? `  log       ${logFile || '(not persisted)'}
 
   Launching claude here through the proxy. Open another terminal and run

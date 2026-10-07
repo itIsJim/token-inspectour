@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attributeText, buildParts, classifyRequest, diffParts, countParts, totals, detectProjectDir, analyzeRequest } from '../src/analyze.js';
+import { attributeText, buildParts, classifyRequest, diffParts, countParts, totals, detectProjectDir, analyzeRequest, isClaudeCode } from '../src/analyze.js';
 import type { Counter } from '../src/tokens.js';
 import type { AdhocSource, Inventory, RequestBody, Source } from '../src/types.js';
 
@@ -78,7 +78,7 @@ const body: RequestBody = {
 
 test('buildParts classifies tools and message blocks; totals and diff line up', async () => {
   assert.equal(classifyRequest(body).kind, 'main');
-  assert.equal(classifyRequest({ model: 'm', system: 'You are naming a coding session', tools: [] }).label, 'session title');
+  assert.equal(classifyRequest({ model: 'm', metadata: { user_id: JSON.stringify({ session_id: 's1' }) }, system: 'You are naming a coding session', tools: [] }).label, 'session title');
   const { parts, adhocSources } = buildParts(body, inventory);
   const tool = (n: string) => parts.find((p) => p.area === 'tools' && p.name === n)!;
   assert.equal(tool('Bash').kind, 'harness-tool');
@@ -171,6 +171,7 @@ test('attributes Read and Skill tool results to their files; labels subagent tur
   const skill = inventory.sources[1];
   const b: RequestBody = {
     model: 'm',
+    metadata: { user_id: JSON.stringify({ session_id: 's1' }) },
     system: [{ type: 'text', text: inventory.sources[2].body + '\n\nExtra instructions from the harness for this subagent.' }],
     tools: [{ name: 'Read', description: 'r', input_schema: { type: 'object' } }],
     messages: [
@@ -208,4 +209,65 @@ test('attributes Read and Skill tool results to their files; labels subagent tur
   assert.equal(res(3).label, 'tool result: Bash: ls');
   assert.equal(a.parts.find((p) => p.id === 'msg.1.0')!.label, 'tool call: Read: /p/CLAUDE.md');
   assert.ok(a.totals.sourceUsage.ag1.used);
+});
+
+test('requests from plain API clients are turns, not side calls', () => {
+  const sdk: RequestBody = { model: 'm', system: 'Classify the commit message.', messages: [{ role: 'user', content: 'fix typo' }] };
+  assert.equal(isClaudeCode(sdk), false);
+  assert.deepEqual(classifyRequest(sdk), { kind: 'main', label: 'agent turn' });
+  assert.equal(classifyRequest({ model: 'm', messages: [{ role: 'user', content: 'hello' }] }).kind, 'main');
+  const cc: RequestBody = { model: 'm', metadata: { user_id: JSON.stringify({ session_id: 's1' }) }, messages: [{ role: 'user', content: 'hi' }] };
+  assert.equal(isClaudeCode(cc), true);
+  assert.equal(isClaudeCode({ model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text: '<system-reminder>\nx\n</system-reminder>' }] }] }), true);
+  const { parts } = buildParts({ ...sdk, tools: [{ name: 'lookup', description: 'look up', input_schema: { type: 'object' } }] }, inventory);
+  const sys = parts.find((p) => p.id === 'sys.0')!;
+  assert.equal(sys.label, 'system prompt');
+  assert.equal(sys.spans[0].kind, 'user');
+  assert.equal(parts.find((p) => p.id === 'tool.0')!.kind, 'user');
+});
+
+test('compaction is detected from the appended summary instruction, with tools present', () => {
+  const b: RequestBody = {
+    model: 'm',
+    metadata: { user_id: JSON.stringify({ session_id: 's1' }) },
+    system: [{ type: 'text', text: 'You are Claude Code.' }],
+    tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: 'refactor the parser' },
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: [{ type: 'text', text: 'Your task is to create a detailed summary of the conversation so far.' }] },
+    ],
+  };
+  assert.deepEqual(classifyRequest(b), { kind: 'side', label: 'compaction' });
+  b.messages![2] = { role: 'user', content: 'summarize what changed' };
+  assert.equal(classifyRequest(b).kind, 'main');
+});
+
+test('image and document blocks are counted as blocks, not as placeholder text', async () => {
+  const pdf = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0x' } };
+  const png = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0K' } };
+  const b = {
+    model: 'm',
+    messages: [
+      { role: 'user', content: [pdf, { type: 'text', text: 'Summarise the attached file.' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.png' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'image follows' }, png] }] },
+    ],
+  } as unknown as RequestBody;
+  const blocks: string[] = [];
+  const fakeCounter: Counter = {
+    ready: true,
+    async countSystemBlocks() { return 0; },
+    async countTools() { return 0; },
+    async toolFraming() { return 0; },
+    async countTool() { return 0; },
+    async countText(_m, text) { return Math.ceil(text.length / 4); },
+    async countMessageBlock(_m, _r, block) { blocks.push(block.type); return block.type === 'document' ? 1500 : block.type === 'image' ? 800 : 5; },
+    async countThinkingBlock() { return 0; },
+  };
+  const { parts } = buildParts(b, { projectDir: '/p', scannedAt: 1, sources: [] });
+  await countParts(parts, b, fakeCounter, {});
+  assert.equal(parts.find((p) => p.id === 'msg.0.0')!.tokens, 1500);
+  assert.ok(parts.find((p) => p.id === 'msg.2.0')!.tokens! >= 800);
+  assert.ok(blocks.includes('document') && blocks.includes('image'));
 });

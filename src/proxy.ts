@@ -6,7 +6,8 @@ import https from 'node:https';
 import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import { SseAssembler, fromJsonBody } from './sse.js';
-import { redactHeaders, shortId, nowIso } from './util.js';
+import { redactHeaders, shortId, nowIso, sha } from './util.js';
+import { firstMessageText } from './store.js';
 import type { AssembledResponse, CaptureRecord, RequestBody } from './types.js';
 
 export type CapturePhase = 'request' | 'response';
@@ -50,6 +51,7 @@ export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log 
 
       const headers: Record<string, string | string[] | undefined> = { ...req.headers, host: up.host, 'accept-encoding': 'identity' };
       delete headers.connection;
+      delete headers[SESSION_HEADER];
       if (body.length) headers['content-length'] = String(body.length);
 
       const t0 = Date.now();
@@ -129,6 +131,21 @@ export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log 
   });
 }
 
+// Header that names the session for clients other than Claude Code. It is not forwarded upstream.
+export const SESSION_HEADER = 'x-inspectour-session';
+
+// Claude Code puts its session id in metadata.user_id. Other clients (SDK scripts, agent
+// frameworks) are grouped by the session header when present, otherwise by agent name and
+// conversation: every turn of one conversation resends the same first message.
+export function sessionIdFor(body: RequestBody | null, meta: Record<string, unknown>, header: string | string[] | undefined, agent: string | null): string {
+  if (typeof meta.session_id === 'string' && meta.session_id) return meta.session_id;
+  const h = (Array.isArray(header) ? header[0] : header || '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  if (h) return h;
+  const first = body ? firstMessageText({ body }) : '';
+  if (!first) return 'unknown';
+  return `${agent || 'client'}-${sha(first).slice(0, 12)}`;
+}
+
 function beginCapture(req: http.IncomingMessage, body: Buffer, agent: string | null, upPath: string): CaptureRecord {
   let parsed: RequestBody | null = null;
   try {
@@ -149,7 +166,7 @@ function beginCapture(req: http.IncomingMessage, body: Buffer, agent: string | n
     bytesIn: body.length,
     body: parsed,
     bodyText: parsed ? null : body.toString('utf8').slice(0, 20000),
-    sessionId: typeof meta.session_id === 'string' ? meta.session_id : 'unknown',
+    sessionId: sessionIdFor(parsed, meta, req.headers[SESSION_HEADER], agent),
     meta,
     model: parsed ? parsed.model : null,
     stream: parsed ? !!parsed.stream : false,

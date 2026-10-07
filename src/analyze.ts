@@ -32,11 +32,41 @@ function messageBlocks(msg: Message): ContentBlock[] {
   return Array.isArray(msg.content) ? msg.content : [];
 }
 
+// Claude Code marks its requests with a session id in metadata.user_id, its harness system
+// prompt, and <system-reminder> blocks. Anything else is a plain API client.
+export function isClaudeCode(body: RequestBody | null): boolean {
+  if (!body) return false;
+  try {
+    const meta = JSON.parse(body.metadata?.user_id || '{}') as { session_id?: unknown };
+    if (typeof meta.session_id === 'string') return true;
+  } catch {}
+  if (/Claude Code|Claude Agent SDK|interactive agent/i.test(systemText(body))) return true;
+  const first = body.messages?.[0];
+  return !!first && messageBlocks(first).some((b) => b.type === 'text' && /<system-reminder>/.test((b as { text?: string }).text || ''));
+}
+
+// Text of the last user message, where the compaction instruction is appended.
+function lastUserText(body: RequestBody): string {
+  const msgs = body.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role !== 'user') continue;
+    return messageBlocks(msgs[i]).map((b) => (b.type === 'text' ? (b as { text?: string }).text || '' : '')).join('\n');
+  }
+  return '';
+}
+
+const COMPACT_INSTRUCTION = /create a detailed summary of the conversation/i;
+
 export function classifyRequest(body: RequestBody | null): Classification {
   if (!body) return { kind: 'unknown', label: 'unparseable' };
+  // Plain API clients have no side calls; every request is a turn of the client's own loop.
+  if (!isClaudeCode(body)) return { kind: 'main', label: 'agent turn' };
   const sys = systemText(body);
   const tools = Array.isArray(body.tools) ? body.tools.length : 0;
   if (/naming a coding session|session title/i.test(sys)) return { kind: 'side', label: 'session title' };
+  // The compaction request resends the system prompt, tools and history, then appends the
+  // summary instruction as the last user message; older versions sent it as a tool-less call.
+  if (COMPACT_INSTRUCTION.test(lastUserText(body))) return { kind: 'side', label: 'compaction' };
   if (/summariz(e|ing) (the|this) conversation|compact/i.test(sys) && tools === 0) return { kind: 'side', label: 'compaction' };
   if (/Extract any file paths|filepath extraction/i.test(sys)) return { kind: 'side', label: 'file-path extraction' };
   if (/quota|classif/i.test(sys) && tools === 0 && sys.length < 4000) return { kind: 'side', label: 'classifier' };
@@ -60,6 +90,14 @@ export function detectProjectDir(body: RequestBody | null): string | null {
   let mm: RegExpExecArray | null;
   while ((mm = re.exec(all))) if (!best || mm[1].length > best.length) best = mm[1];
   return best;
+}
+
+const MEDIA = new Set(['image', 'document']);
+
+// Image and document blocks nested in a tool result.
+function mediaIn(block: ContentBlock): ContentBlock[] {
+  const c = (block as { content?: unknown }).content;
+  return Array.isArray(c) ? (c as ContentBlock[]).filter((b) => b && MEDIA.has(b.type)) : [];
 }
 
 function blockText(block: ContentBlock | string | null | undefined): string {
@@ -323,20 +361,22 @@ export function buildParts(body: RequestBody, inventory: Inventory): { parts: Pa
     return s;
   };
   const inv = { sources: inventory.sources };
+  // A plain API client writes its own system prompt and tools; there is no harness to attribute.
+  const cc = isClaudeCode(body);
 
   systemBlocks(body).forEach((b, i) => {
     const text = b.text || '';
     parts.push({
       id: `sys.${i}`, area: 'system', index: i, role: 'system', blockType: 'text', cache: !!b.cache_control,
-      label: i === 0 && /billing-header/.test(text) ? 'billing header' : text.length < 200 ? 'system preamble' : 'harness system prompt',
+      label: !cc ? 'system prompt' : i === 0 && /billing-header/.test(text) ? 'billing header' : text.length < 200 ? 'system preamble' : 'harness system prompt',
       text, chars: text.length,
-      spans: attributeText(text, { defaultKind: 'harness', defaultLabel: 'harness system prompt', inventory: inv, adhoc }),
+      spans: attributeText(text, { defaultKind: cc ? 'harness' : 'user', defaultLabel: cc ? 'harness system prompt' : 'system prompt', inventory: inv, adhoc }),
     });
   });
 
   (body.tools || []).forEach((t, i) => {
     const text = toolText(t);
-    let kind: SourceKind = 'harness-tool';
+    let kind: SourceKind = cc ? 'harness-tool' : 'user';
     let sourceId: string | undefined;
     let label = `tool: ${t.name}`;
     const mm = /^mcp__(.+?)__(.+)$/.exec(t.name || '');
@@ -464,7 +504,18 @@ export async function countParts(parts: Part[], body: RequestBody, counter: Coun
         jobs.push(counter.countThinkingBlock(model, block, { thinking: body.thinking, context_management: body.context_management }).then((n) => setTokens(p, n)));
         continue;
       }
-      const structural = msg.role === 'system' || ['tool_result', 'tool_use', 'image', 'document'].includes(block.type);
+      // Images and documents are counted as the real block: the text form is only a placeholder.
+      if (MEDIA.has(block.type) && msg.role !== 'system') {
+        jobs.push(counter.countMessageBlock(model, 'user', block).then((n) => setTokens(p, n)));
+        continue;
+      }
+      const media = block.type === 'tool_result' ? mediaIn(block) : [];
+      if (media.length) {
+        jobs.push(Promise.all([counter.countText(model, p.text), ...media.map((m) => counter.countMessageBlock(model, 'user', m))])
+          .then((ns) => setTokens(p, ns.some((n) => n == null) ? null : ns.reduce<number>((a, n) => a + (n as number), 0))));
+        continue;
+      }
+      const structural = msg.role === 'system' || ['tool_result', 'tool_use'].includes(block.type);
       jobs.push(structural
         ? counter.countText(model, p.text).then((n) => setTokens(p, n))
         : counter.countMessageBlock(model, role, block).then((n) => setTokens(p, n)));
@@ -595,7 +646,7 @@ export async function analyzeRequest(rec: AnalyzableRecord, inventory: Inventory
   if (!body) return null;
   const cls = classifyRequest(body);
   const { parts, adhocSources } = buildParts(body, inventory);
-  if (cls.kind === 'main') {
+  if (cls.kind === 'main' && isClaudeCode(body)) {
     const agentSpan = parts.filter((p) => p.area === 'system').flatMap((p) => p.spans).find((s) => s.kind === 'agent' && s.sourceId);
     const sys = systemText(body);
     if (agentSpan) {
