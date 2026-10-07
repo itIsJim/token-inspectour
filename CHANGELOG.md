@@ -12,7 +12,11 @@
 - Compaction is detected from the summary instruction in the last user message, also when the request carries tools.
 - `image` and `document` blocks, including those inside tool results, are counted as real blocks instead of placeholder text.
 - `examples/` with scripts for conversation resend and prompt caching.
-- README documents single-request measurement, other API clients, recipes, the JSON API, the tool-search behaviour behind a custom base URL, and what `count_tokens` numbers mean.
+- The proxy and UI reject requests with a non-loopback `Host` header (DNS rebinding) and cross-site browser requests.
+- Capture, log, and cache files are created owner-only (`0700` directories, `0600` files); `set-cookie` headers are redacted.
+- Windows: `claude` launches through its `.cmd` shim and the browser opens with `rundll32`; a missing browser opener no longer crashes the process.
+- The npm package includes the compiled UI modules (`dist/ui`).
+- README documents single-request measurement, other API clients, recipes, the JSON API, the tool-search behaviour behind a custom base URL, what `count_tokens` numbers mean, supported setups, references, third-party licenses, and a trademark notice.
 
 ## 0.1.0 (2026-09-09)
 

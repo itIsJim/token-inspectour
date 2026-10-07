@@ -25,7 +25,8 @@ Claude Code assembles a large prompt for every call: a harness system prompt, do
 ## Requirements
 
 - Node 18.17 or later
-- A working `claude` installation and login (OAuth or API key)
+- [Claude Code](https://code.claude.com/docs/en/overview) installed and signed in to the Anthropic API, with a claude.ai subscription or an API key. Setting `ANTHROPIC_BASE_URL` alone keeps the existing login, its usage limits, and its billing ([LLM gateway documentation](https://code.claude.com/docs/en/llm-gateway)).
+- Claude Code configured for Amazon Bedrock, Google Cloud, or Microsoft Foundry uses provider-specific endpoints and is not supported.
 
 ## Install
 
@@ -51,7 +52,7 @@ Pass arguments to `claude` after `--`:
 
 ```sh
 node bin/token-inspectour.js path/to/project -- --continue
-node bin/token-inspectour.js path/to/project -- -p "summarize the repo"
+node bin/token-inspectour.js path/to/project -- -p "<prompt>"
 ```
 
 ### Several agents
@@ -89,7 +90,7 @@ The path segment after the port names the agent. The proxy strips it before forw
 Send one headless prompt through the inspector:
 
 ```sh
-node bin/token-inspectour.js path/to/project -- -p "Which function is in calc.py?"
+node bin/token-inspectour.js path/to/project -- -p "<prompt>"
 ```
 
 Claude Code answers and exits; the UI keeps serving. Select the first agent turn in the left column. **Anatomy** shows the prompt total reported by the server (`usage`), the sum of the attributed parts, and the split by request area (`system`, `tools`, `messages`) and by source kind. The *Tools* accordion separates built-in tools from each MCP server, and the *Messages* accordion shows which `CLAUDE.md` files and reminders were sent.
@@ -256,10 +257,11 @@ curl -s 'http://127.0.0.1:4142/agent-a/api/requests/<id>?full=1' # full analysis
 
 ## Data and privacy
 
-All data stays on the local machine. The proxy listens on `127.0.0.1` only and forwards to the configured upstream API.
+All data stays on the local machine. The proxy and the UI listen on `127.0.0.1` only; the proxy forwards to the configured upstream API and nowhere else. No telemetry is collected.
 
-- **Captures:** stored in `~/.token-inspectour/captures/<session>/`, one JSON file per call, alongside an `index.jsonl` of their summaries. They contain prompts, file contents as sent to the model, and model replies; treat the directory as a transcript.
-- **Credentials:** authorization headers are redacted before anything is written. Live auth headers are held in memory only, for count_tokens calls.
+- **Local requests only:** both servers reject requests whose `Host` header is not a loopback address, which blocks DNS-rebinding attacks from web pages, and reject browser requests sent from another site.
+- **Captures:** stored in `~/.token-inspectour/captures/<session>/`, one JSON file per call, alongside an `index.jsonl` of their summaries. They contain prompts, file contents as sent to the model, model replies, and identifiers such as `metadata.user_id` and organization headers; treat the directory as a transcript. Directories are created with mode `0700` and files with mode `0600`.
+- **Credentials:** `authorization`, `x-api-key`, `cookie`, `set-cookie`, and `proxy-authorization` headers are redacted before anything is written. Live auth headers are held in memory only, for count_tokens calls, which are free of charge ([token counting](https://platform.claude.com/docs/en/build-with-claude/token-counting)).
 - **Logs:** in launch mode, the inspector's log goes to `~/.token-inspectour/logs/`.
 
 Set `TOKEN_INSPECTOUR_HOME` to relocate all stored data. Use `--no-persist` to store nothing.
@@ -277,8 +279,8 @@ memory for as long as the process runs.
 
 ## Compatibility and limitations
 
-- Developed against Claude Code 2.1.x on macOS. Attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, affected spans fall back to `harness` or `reminder` until the patterns in `src/analyze.ts` are updated.
-- Claude Code must honour `ANTHROPIC_BASE_URL`. To chain an existing gateway, pass it with `--upstream`.
+- Developed and tested against Claude Code 2.1.x on macOS. Linux and Windows are handled in the code (browser opening, launching `claude` through the `.cmd` shim on Windows) but untested. Attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, affected spans fall back to `harness` or `reminder` until the patterns in `src/analyze.ts` are updated.
+- Claude Code must honour `ANTHROPIC_BASE_URL`. Organizations can pin it through managed settings (`allowedProviders`), which makes Claude Code refuse a local proxy. To chain an existing gateway, pass it with `--upstream`.
 - **Tool search.** Claude Code turns off MCP tool search when `ANTHROPIC_BASE_URL` points to a host other than the Anthropic API, so every MCP tool definition is sent in full and no `ToolSearch` calls appear. Captures made through the proxy therefore show more tool tokens than the same session without it. Set `ENABLE_TOOL_SEARCH=true` in the environment of `claude` to keep tool search on; the proxy forwards request bodies and headers unchanged, including `tool_reference` blocks.
 - The UI is two framework-free pages (`ui/index.html`, `ui/graph.html`) with compiled modules and vendored libraries. Browser coverage beyond recent Chromium-based browsers is untested.
 
@@ -316,8 +318,18 @@ Strict TypeScript compiled to ES modules. Dev dependencies are the TypeScript co
 
 ## Contributing
 
-Report requests that are attributed incorrectly with an anonymised capture: remove message text and keep the structure.
+Issues and pull requests are welcome on GitHub. To report a request that is attributed incorrectly, attach an anonymised capture: replace message text and file contents, remove `metadata.user_id`, and remove organization or account headers, keeping the structure. Run `npm test` before opening a pull request.
+
+## References
+
+- Claude Code: [LLM gateways and `ANTHROPIC_BASE_URL`](https://code.claude.com/docs/en/llm-gateway), [memory and `CLAUDE.md`](https://code.claude.com/docs/en/memory), [MCP and tool search](https://code.claude.com/docs/en/mcp), [settings](https://code.claude.com/docs/en/settings)
+- Claude API: [Messages](https://platform.claude.com/docs/en/api/messages), [token counting](https://platform.claude.com/docs/en/build-with-claude/token-counting), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- Vendored libraries: [d3](https://github.com/d3/d3) 7.9.0, [d3-sankey](https://github.com/d3/d3-sankey) 0.12.3
 
 ## License
 
-MIT
+[MIT](LICENSE).
+
+Third-party code in `ui/vendor/` keeps its own license: d3 under the ISC license (`ui/vendor/LICENSE-d3`) and d3-sankey under the BSD 3-Clause license (`ui/vendor/LICENSE-d3-sankey`), both Copyright Mike Bostock.
+
+Claude, Claude Code, and Anthropic are trademarks of Anthropic, PBC. token-inspectour is an independent project and is not affiliated with, sponsored by, or endorsed by Anthropic.
