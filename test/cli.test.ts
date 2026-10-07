@@ -57,3 +57,16 @@ test('sessions: Claude Code metadata, then the session header, then agent and fi
   assert.match(sessionIdFor(body, {}, undefined, null), /^client-/);
   assert.equal(sessionIdFor(null, {}, undefined, 'agent-a'), 'unknown');
 });
+
+test('only loopback hosts and same-site browser requests are served', async () => {
+  const { isLocalRequest, redactHeaders } = await import('../src/util.js');
+  assert.equal(isLocalRequest({ host: '127.0.0.1:4142' }), true);
+  assert.equal(isLocalRequest({ host: 'localhost:4142', origin: 'http://localhost:4142', 'sec-fetch-site': 'same-origin' }), true);
+  assert.equal(isLocalRequest({ host: '[::1]:4142' }), true);
+  assert.equal(isLocalRequest({ host: 'attacker.example:4142' }), false);
+  assert.equal(isLocalRequest({ host: '127.0.0.1:4142', origin: 'https://attacker.example' }), false);
+  assert.equal(isLocalRequest({ host: '127.0.0.1:4142', 'sec-fetch-site': 'cross-site' }), false);
+  assert.equal(isLocalRequest({}), false);
+  const r = redactHeaders({ authorization: 'Bearer x', 'x-api-key': 'k', 'set-cookie': ['a=b'], 'anthropic-version': '2023-06-01' });
+  assert.deepEqual(r, { authorization: '<redacted>', 'x-api-key': '<redacted>', 'set-cookie': '<redacted>', 'anthropic-version': '2023-06-01' });
+});

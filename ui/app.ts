@@ -775,7 +775,7 @@ function drawRelation(el: HTMLElement, a: Analysis): void {
       tip: `<b>result · ${esc(t)}</b>${result.isError ? ' <span class="pill bad">error</span>' : ''}<div class="muted small">${esc(partPath(result) || '')} · ${esc(result.label)}</div><div class="row"><span>tokens back into context</span><span>${fmt(result.tokens)}</span></div>` });
   }
   const msgIds = idx.map((i) => `m:${i}`);
-  // tools inserted just before the message where they were first called
+  // tools inserted immediately before the message where they were first called
   const inline: string[] = [];
   const byFirst = d3.group(tools, (t) => stats.get(t)!.first);
   for (const i of idx) {

@@ -10,7 +10,7 @@ import { Store } from './store.js';
 import { TokenCounter } from './tokens.js';
 import { scanInventory, watchRoots, KINDS } from './inventory.js';
 import { analyzeRequest, classifyRequest, detectProjectDir } from './analyze.js';
-import { readJsonSafe, exists, dataDir } from './util.js';
+import { readJsonSafe, exists, dataDir, PRIVATE_DIR, PRIVATE_FILE } from './util.js';
 import type { CaptureRecord, Inventory, RequestBody } from './types.js';
 
 const HELP = `token-inspectour — inspect what Claude Code sends to the model
@@ -23,10 +23,10 @@ Usage: token-inspectour [projectDir] [options] [-- claude args…]
 
   projectDir            Project to launch Claude Code in (default: cwd). Sessions' projects are
                         also detected from the requests themselves.
-  -- <args…>            Everything after -- is passed to claude (e.g. -- -p "summarize the repo")
+  -- <args…>            Everything after -- is passed to claude (e.g. -- -p "<prompt>")
   --name <slug>         Agent name used in the routes (default: the project folder name).
                         Proxy: http://127.0.0.1:<port>/<name>   UI: http://127.0.0.1:<ui>/<name>/
-  --proxy-only          Do not launch claude; just run the proxy + UI. Attach any Claude Code
+  --proxy-only          Do not launch claude; run only the proxy + UI. Attach any Claude Code
                         with ANTHROPIC_BASE_URL=http://127.0.0.1:<port>/<agent-name>; the path
                         segment labels that agent's sessions.
   -p, --port <n>        Proxy port (default: first free port from 4141)
@@ -39,9 +39,9 @@ Usage: token-inspectour [projectDir] [options] [-- claude args…]
   -h, --help            Show this help
 
 Examples:
-  token-inspectour ~/projects/agent-a                 # terminal 1: first agent + its UI
-  token-inspectour ~/projects/agent-b                 # terminal 2: second agent + a second UI
-  token-inspectour ~/projects/agent-a -- -p "status"  # one headless prompt through the proxy
+  token-inspectour path/to/agent-a                   # terminal 1: first agent + its UI
+  token-inspectour path/to/agent-b                   # terminal 2: second agent + a second UI
+  token-inspectour path/to/agent-a -- -p "<prompt>"  # one headless prompt through the proxy
   token-inspectour --proxy-only -p 4141               # plain proxy; attach agents manually:
       ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a claude
 `;
@@ -123,13 +123,13 @@ export async function main(argv: string[]): Promise<void> {
   let logFile: string | null = null;
   if (launching && o.persist) {
     const ld = path.join(dataDir(), 'logs');
-    fs.mkdirSync(ld, { recursive: true });
+    fs.mkdirSync(ld, { recursive: true, mode: PRIVATE_DIR });
     logFile = path.join(ld, `inspector-${port}.log`);
   }
   const log = (line: string): void => {
     const s = `[${new Date().toISOString().slice(11, 19)}] ${line}`;
     if (launching) {
-      if (logFile) fs.appendFileSync(logFile, s + '\n');
+      if (logFile) fs.appendFileSync(logFile, s + '\n', { mode: PRIVATE_FILE });
     } else process.stderr.write(s + '\n');
     for (const l of logListeners) l(s);
   };
@@ -289,7 +289,10 @@ ${launching ? `  log       ${logFile || '(not persisted)'}
   if (o.open) openBrowser(ui.uiUrl);
   if (launching) {
     log(`launching claude ${o.run.join(' ')} in ${o.projectDir}`);
-    const child = spawn('claude', o.run, { cwd: o.projectDir, stdio: 'inherit', env: { ...process.env, ANTHROPIC_BASE_URL: baseUrl } });
+    // On Windows an npm-installed claude is a .cmd shim, which only runs through the shell.
+    const win = process.platform === 'win32';
+    const args = win ? o.run.map((a) => `"${a.replace(/"/g, '""')}"`) : o.run;
+    const child = spawn('claude', args, { cwd: o.projectDir, stdio: 'inherit', shell: win, env: { ...process.env, ANTHROPIC_BASE_URL: baseUrl } });
     child.on('error', (e) => {
       process.stderr.write(`could not launch claude: ${e.message}\n`);
     });
@@ -330,8 +333,12 @@ function preview(s: string): string {
 }
 
 function openBrowser(url: string): void {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  const [cmd, args] = process.platform === 'darwin' ? ['open', [url]]
+    : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+    : ['xdg-open', [url]];
   try {
-    spawn(cmd, [url], { stdio: 'ignore', detached: true }).unref();
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
   } catch {}
 }

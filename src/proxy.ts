@@ -6,7 +6,7 @@ import https from 'node:https';
 import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import { SseAssembler, fromJsonBody } from './sse.js';
-import { redactHeaders, shortId, nowIso, sha } from './util.js';
+import { redactHeaders, shortId, nowIso, sha, isLocalRequest } from './util.js';
 import { firstMessageText } from './store.js';
 import type { AssembledResponse, CaptureRecord, RequestBody } from './types.js';
 
@@ -43,6 +43,11 @@ export function startProxy({ port, host = '127.0.0.1', upstream, onCapture, log 
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
+      if (!isLocalRequest(req.headers)) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'forbidden', message: 'only local requests are proxied' } }));
+        return;
+      }
       const body = Buffer.concat(chunks);
       const { agent, path: upPath } = splitAgentPrefix(req.url);
       const isMessages = req.method === 'POST' && /^\/v1\/messages(\?|$)/.test(upPath);

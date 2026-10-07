@@ -7,6 +7,7 @@ import { publicSource } from './inventory.js';
 import type { KindInfo } from './inventory.js';
 import { slimAnalysis } from './analyze.js';
 import { summarize } from './store.js';
+import { isLocalRequest } from './util.js';
 import { buildFlowGraph, buildContextGraph } from './graph.js';
 import type { Store } from './store.js';
 import type { TokenCounter } from './tokens.js';
@@ -70,6 +71,7 @@ export function startUiServer({ port, host = '127.0.0.1', ctx }: { port: number;
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://x');
     let p = url.pathname;
+    if (!isLocalRequest(req.headers)) return json(res, 403, { error: 'only local requests are served' });
     try {
       // Everything is served under /<agent-name>/ so tabs and logs identify the instance.
       if (p === '/' || p === base) {

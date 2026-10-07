@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { dataDir, readFileSafe, listDir, nowIso, sha } from './util.js';
+import { dataDir, readFileSafe, listDir, nowIso, sha, PRIVATE_DIR, PRIVATE_FILE } from './util.js';
 import type { CaptureRecord, RequestSummary, Session, SessionSummary } from './types.js';
 
 export type StoreEvent = 'session' | 'request' | 'response' | 'analysis' | 'update' | 'cleared';
@@ -64,7 +64,7 @@ function readRecord(p: string): CaptureRecord | null {
 
 function writeAtomic(p: string, text: string): void {
   const tmp = `${p}.tmp`;
-  fs.writeFileSync(tmp, text);
+  fs.writeFileSync(tmp, text, { mode: PRIVATE_FILE });
   fs.renameSync(tmp, p);
 }
 
@@ -88,7 +88,7 @@ export class Store extends EventEmitter {
     this.persist = persist;
     this.cacheBytes = cacheBytes;
     this.dir = persist ? path.join(dataDir(), 'captures') : null;
-    if (this.dir) fs.mkdirSync(this.dir, { recursive: true });
+    if (this.dir) fs.mkdirSync(this.dir, { recursive: true, mode: PRIVATE_DIR });
   }
 
   load(): void {
@@ -190,12 +190,12 @@ export class Store extends EventEmitter {
       return;
     }
     const dir = path.join(this.dir, sessionKey(rec.sessionId));
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR });
     const name = captureFile(rec);
     writeAtomic(path.join(dir, name), text);
     const e = this.reindex(rec, name, text.length);
     try {
-      fs.appendFileSync(path.join(dir, INDEX_FILE), indexLine(e));
+      fs.appendFileSync(path.join(dir, INDEX_FILE), indexLine(e), { mode: PRIVATE_FILE });
     } catch {}
   }
 
@@ -298,7 +298,7 @@ export class Store extends EventEmitter {
     this.seq = 0;
     if (this.dir) {
       fs.rmSync(this.dir, { recursive: true, force: true });
-      fs.mkdirSync(this.dir, { recursive: true });
+      fs.mkdirSync(this.dir, { recursive: true, mode: PRIVATE_DIR });
     }
     this.emit('cleared');
   }

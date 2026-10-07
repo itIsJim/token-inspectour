@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
-import { dataDir, sha } from './util.js';
+import { dataDir, sha, PRIVATE_FILE } from './util.js';
 import type { Headers } from './util.js';
 import type { ContentBlock, SystemBlock, ToolDef } from './types.js';
 
@@ -78,7 +78,7 @@ export class TokenCounter {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       try {
-        fs.writeFileSync(this.cachePath!, JSON.stringify(Object.fromEntries(this.cache)));
+        fs.writeFileSync(this.cachePath!, JSON.stringify(Object.fromEntries(this.cache)), { mode: PRIVATE_FILE });
       } catch {}
     }, 500);
   }

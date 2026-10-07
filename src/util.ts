@@ -104,10 +104,38 @@ export function splitFrontmatter(text: string): Frontmatter {
 export const homeDir = (): string => process.env.HOME || os.homedir();
 export const claudeDir = (): string => process.env.CLAUDE_CONFIG_DIR || path.join(homeDir(), '.claude');
 
+// Captures hold prompts and file contents: directories and files are readable by the owner only.
+export const PRIVATE_DIR = 0o700;
+export const PRIVATE_FILE = 0o600;
+
 export function dataDir(): string {
   const d = process.env.TOKEN_INSPECTOUR_HOME || path.join(homeDir(), '.token-inspectour');
-  fs.mkdirSync(d, { recursive: true });
+  fs.mkdirSync(d, { recursive: true, mode: PRIVATE_DIR });
   return d;
+}
+
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+function hostname(hostHeader: string): string {
+  const m = /^(\[[^\]]+\]|[^:]+)(?::\d+)?$/.exec(hostHeader.trim().toLowerCase());
+  return m ? m[1] : '';
+}
+
+/** Rejects requests that did not come from a local client: a Host other than loopback (DNS
+ *  rebinding), or a browser request sent from another site (cross-site request forgery). */
+export function isLocalRequest(headers: Record<string, string | string[] | undefined>): boolean {
+  const host = String(headers.host || '');
+  if (!LOOPBACK.has(hostname(host))) return false;
+  if (headers['sec-fetch-site'] === 'cross-site') return false;
+  const origin = headers.origin;
+  if (typeof origin === 'string' && origin !== 'null') {
+    try {
+      if (!LOOPBACK.has(new URL(origin).hostname.toLowerCase()) && !LOOPBACK.has(`[${new URL(origin).hostname}]`)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Claude Code's project-dir sanitisation for ~/.claude/projects/<key>
@@ -120,7 +148,7 @@ export type Headers = Record<string, string | string[] | undefined>;
 export function redactHeaders(h: Headers | undefined): Headers {
   const out: Headers = {};
   for (const [k, v] of Object.entries(h || {})) {
-    if (/^(authorization|x-api-key|cookie|proxy-authorization)$/i.test(k)) out[k] = '<redacted>';
+    if (/^(authorization|x-api-key|cookie|set-cookie|proxy-authorization)$/i.test(k)) out[k] = '<redacted>';
     else out[k] = v;
   }
   return out;
