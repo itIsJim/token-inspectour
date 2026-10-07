@@ -1,6 +1,6 @@
 {
   "name": "token-inspectour",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local proxy and browser UI that maps every span of each Claude Code request to the CLAUDE.md, skill, command, agent, hook, MCP, or harness source that produced it, with exact token counts per step.",
   "type": "module",
   "bin": {

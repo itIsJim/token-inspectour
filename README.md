@@ -84,6 +84,20 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-b claude
 
 The path segment after the port names the agent. The proxy strips it before forwarding and records it on every capture, so one UI lists both agents' sessions, labelled.
 
+### Measuring a single request
+
+Send one headless prompt through the inspector:
+
+```sh
+node bin/token-inspectour.js path/to/project -- -p "Which function is in calc.py?"
+```
+
+Claude Code answers and exits; the UI keeps serving. Select the first agent turn in the left column. **Anatomy** shows the prompt total reported by the server (`usage`), the sum of the attributed parts, and the split by request area (`system`, `tools`, `messages`) and by source kind. The *Tools* accordion separates built-in tools from each MCP server, and the *Messages* accordion shows which `CLAUDE.md` files and reminders were sent.
+
+The totals depend on the environment, not only on the prompt: the Claude Code version, the model, connected MCP servers and claude.ai connectors, installed skills and plugins, and every `CLAUDE.md` above the project. Record these with any number taken from a capture, and compare runs made on the same machine and configuration. Tool definitions are usually the largest area, and grow with each connected MCP server.
+
+With `--no-count`, per-part numbers are local estimates (`≈`); the prompt total still comes from the server's `usage`.
+
 ## Views
 
 ### Inspector
@@ -189,6 +203,30 @@ token-inspectour [projectDir] [options] [-- claude args…]
   --clear               Delete previously captured sessions on start
   -h, --help            Show help
 ```
+
+## JSON API
+
+The UI reads everything from a JSON API under the instance's base URL, for example `http://127.0.0.1:4142/agent-a/`. Use it to script measurements:
+
+```sh
+curl -s http://127.0.0.1:4142/agent-a/api/sessions               # sessions with one summary per call
+curl -s http://127.0.0.1:4142/agent-a/api/requests/<id>          # one call: usage, analysis totals, parts
+curl -s 'http://127.0.0.1:4142/agent-a/api/requests/<id>?full=1' # full analysis with spans and inventory
+```
+
+| method | path | returns |
+|---|---|---|
+| GET | `api/state` | instance settings, counter status, inventory, sessions |
+| GET | `api/sessions` | sessions and their call summaries (`usage`, `toolCount`, `kind`, `model`) |
+| GET | `api/requests/<id>` | one call; `analysis.promptTotalFromUsage`, `analysis.totals.byArea`, `analysis.totals.byKind`, `analysis.parts` |
+| GET | `api/requests/<id>/raw` | captured request and response bodies and headers, credentials redacted |
+| GET | `api/requests/<id>/graph` | turn-context Sankey data |
+| GET | `api/sessions/<id>/graph` | session flow-graph data |
+| GET | `api/sources/<id>` | one inventory source with its content |
+| GET | `events` | server-sent events: `session`, `request`, `response`, `analysis`, `inventory`, `cleared`, `log` |
+| POST | `api/requests/<id>/recount` | re-analyse one call with exact counts |
+| POST | `api/rescan` | rescan the inventory |
+| POST | `api/clear` | delete all captured sessions |
 
 ## Data and privacy
 
