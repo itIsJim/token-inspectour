@@ -57,7 +57,7 @@ export async function renderSourcePanel(id: string, fallback: PublicSource | und
   try {
     s = await api<PublicSource & { content: string }>(`/api/sources/${id}`);
   } catch {
-    s = fallback ? ({ ...fallback, content: '(file outside the scanned inventory — content not loaded)' } as PublicSource & { content: string }) : ({ id, name: id, content: '' } as unknown as PublicSource & { content: string });
+    s = fallback ? ({ ...fallback, content: '(file outside the scanned inventory; content not loaded)' } as PublicSource & { content: string }) : ({ id, name: id, content: '' } as unknown as PublicSource & { content: string });
   }
   let content = esc(s.content || '');
   if (matchedText && s.content) {

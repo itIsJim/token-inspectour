@@ -13,7 +13,7 @@ import { analyzeRequest, classifyRequest, detectProjectDir } from './analyze.js'
 import { readJsonSafe, exists, dataDir, PRIVATE_DIR, PRIVATE_FILE } from './util.js';
 import type { CaptureRecord, Inventory, RequestBody } from './types.js';
 
-const HELP = `token-inspectour — inspect what Claude Code sends to the model
+const HELP = `token-inspectour: inspect what Claude Code sends to the model
 
 Usage: token-inspectour [projectDir] [options] [-- claude args…]
 
@@ -308,7 +308,7 @@ ${launching ? `  log       ${logFile || '(not persisted)'}
     });
     child.on('exit', (code) => {
       log(`claude exited (${code})`);
-      process.stderr.write(`\n  claude exited (${code}). Inspector still serving ${ui.uiUrl} — press Ctrl-C to quit.\n`);
+      process.stderr.write(`\n  claude exited (${code}). Inspector still serving ${ui.uiUrl}; press Ctrl-C to quit.\n`);
     });
     const stop = (): void => {
       try {

@@ -1,8 +1,8 @@
 // Build flow-graph data (nodes + edges for the d3 flow graph and Sankey) from captured requests.
 //
-//  flow    — one session: agent turns in order, the tool calls each turn made (built-in,
+//  flow:    one session: agent turns in order, the tool calls each turn made (built-in,
 //            MCP, skills, subagent spawns), side calls, with token weights on every edge.
-//  context — one request: which sources (CLAUDE.md, skills, harness, …) feed which area of
+//  context: one request: which sources (CLAUDE.md, skills, harness, …) feed which area of
 //            the request (system / tools / messages), edge width by tokens.
 import { KINDS } from './inventory.js';
 import { firstMessageText, threadKey } from './store.js';
@@ -87,7 +87,7 @@ export function buildFlowGraph(sessionId: string, records: RecordSource, mcpServ
     addNode({
       data: {
         id: nodeId, label, kind: isSub ? 'agent' : 'turn',
-        sub: [rec.model || '', rec.response?.stop_reason || (rec.status == null ? 'in flight' : ''), rec.userPreview ? `“${rec.userPreview.slice(0, 60)}${rec.userPreview.length > 60 ? '…' : ''}”` : ''].filter(Boolean).join(' · '),
+        sub: [rec.model || '', rec.response?.stop_reason || (rec.status == null ? 'in flight' : ''), rec.userPreview ? `"${rec.userPreview.slice(0, 60)}${rec.userPreview.length > 60 ? '…' : ''}"` : ''].filter(Boolean).join(' · '),
         tokens, tokensOut: out, ref: { type: 'request', id: rec.id },
         detail: {
           seq: rec.seq, model: rec.model, status: rec.status, durationMs: rec.durationMs, stopReason: rec.response?.stop_reason,
