@@ -8,7 +8,11 @@
 - Flow-graph page moved to `/<agent>/graph`, with session flow, agents timeline, spawn tree, and turn-context modes.
 - Encrypted thinking signatures are counted instead of reported as empty.
 - Capture records are read from disk on demand; resident memory is bounded by `TOKEN_INSPECTOUR_CACHE_MB`.
-- README documents single-request measurement and the JSON API.
+- Calls from clients other than Claude Code (SDK scripts, agent frameworks) are agent turns, grouped into sessions by the `x-inspectour-session` header or by agent name and first message; their system prompt and tools are attributed to the client.
+- Compaction is detected from the summary instruction in the last user message, also when the request carries tools.
+- `image` and `document` blocks, including those inside tool results, are counted as real blocks instead of placeholder text.
+- `examples/` with scripts for conversation resend and prompt caching.
+- README documents single-request measurement, other API clients, recipes, the JSON API, the tool-search behaviour behind a custom base URL, and what `count_tokens` numbers mean.
 
 ## 0.1.0 (2026-09-09)
 

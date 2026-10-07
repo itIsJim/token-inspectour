@@ -2,7 +2,7 @@
 
 **Inspect what Claude Code sends to the model.**
 
-token-inspectour is a local proxy with a browser UI. It sits between Claude Code and the Anthropic API, captures every request, and maps each span of each request back to the file that produced it: the `CLAUDE.md` chain, rules, skills, slash commands, subagents, hooks, MCP servers, auto-memory, plugins, and the built-in harness. Every part carries an exact token count, which shows where the context window goes, how it changes from step to step, and which project files reach the model.
+token-inspectour is a local proxy with a browser UI. It sits between Claude Code and the Anthropic API, captures every request, and maps each span of each request back to the file that produced it: the `CLAUDE.md` chain, rules, skills, slash commands, subagents, hooks, MCP servers, auto-memory, plugins, and the built-in harness. Every part carries a token count from the API's `count_tokens` endpoint, which shows where the context window goes, how it changes from step to step, and which project files reach the model.
 
 ```
 ┌─────────────┐  ANTHROPIC_BASE_URL   ┌──────────────────┐  forwards   ┌──────────────────┐
@@ -98,6 +98,29 @@ The totals depend on the environment, not only on the prompt: the Claude Code ve
 
 With `--no-count`, per-part numbers are local estimates (`≈`); the prompt total still comes from the server's `usage`.
 
+### Other API clients
+
+Proxy-only mode captures any client that sends Messages API calls to a configurable base URL: SDK scripts, agent frameworks, or `curl`. Both official SDKs read `ANTHROPIC_BASE_URL`:
+
+```sh
+ANTHROPIC_BASE_URL=http://127.0.0.1:4141/agent-a python agent.py
+```
+
+Calls from clients other than Claude Code are treated as agent turns, so the Session, Diff, and flow-graph views follow them. They are grouped into sessions by, in order:
+
+1. the `x-inspectour-session` request header, when set (the proxy does not forward it);
+2. otherwise the agent name and the first message: every turn of one conversation resends the same first message, so a multi-turn loop stays in one session.
+
+Without Claude Code's harness there are no `CLAUDE.md`, skill, or memory spans to attribute: the system prompt and tool definitions are attributed to the client (`user`), and messages by role (`user`, `model`, `tool-result`). The [`examples/`](examples/) directory has two runnable scripts: five turns of one conversation, and a timestamp that defeats prompt caching.
+
+### Recipes
+
+- **Which files reach the model.** In **Sources**, the *Inventory* table lists every scanned file with its tokens in the selected request; in *Inventory structure*, files that were never sent are drawn hollow. For memory files, run several sessions under one agent name and compare each memory file's *steps* column with the files on disk.
+- **When a skill loads.** In the *Presence over the session* heatmap, a skill's listing line appears from the first step; its body appears only from the step after the `Skill` call. Files that the skill's instructions read with `Bash` arrive as plain tool results and are not attributed to the skill.
+- **An agent loop, turn by turn.** **Response** shows each call's `stop_reason` (`tool_use` for intermediate turns, `end_turn` for the last); the *Session flow* mode of the flow-graph page draws the tool calls between turns.
+- **What a tool description says.** The *Tools* accordion in **Anatomy** shows each tool definition exactly as sent, grouped by MCP server, with its marginal token cost.
+- **What compaction keeps.** Compaction calls are marked on the heatmap and labelled `compaction` in the call list. **Diff** on the next agent turn lists what was removed and what was reloaded.
+
 ## Views
 
 ### Inspector
@@ -111,7 +134,7 @@ With `--no-count`, per-part numbers are local estimates (`≈`); the prompt tota
   - *Relation map*: an arc diagram with messages in order on one axis and each called tool beside them; calls arc above the axis, results arc below, and arc width follows tokens. Reorder by position or by tokens; hovering a tool highlights its arcs.
   - *Tool cost flow*: a Sankey from call input, through each tool, to the result tokens returned into context, with error results separated.
 
-Selecting a part opens the details panel: JSON path (for example `messages[12].content[1]`), exact or estimated tokens, the matching tool call or result, the tool definition, attribution spans, and the content, either verbatim with spans tinted by kind or as collapsible JSON from the captured body. Clicking a span opens the source file with the matched region highlighted.
+Selecting a part opens the details panel: JSON path (for example `messages[12].content[1]`), counted or estimated tokens, the matching tool call or result, the tool definition, attribution spans, and the content, either verbatim with spans tinted by kind or as collapsible JSON from the captured body. Clicking a span opens the source file with the matched region highlighted.
 
 **Sources.**
 - *Usage flow*: a Sankey from source kind to file to request area (system, tools, messages), width by tokens.
@@ -146,8 +169,11 @@ Hovering highlights a node's neighbourhood; clicking opens a details panel with 
 
 After the first captured request, the inspector reuses that session's auth headers to call `/v1/messages/count_tokens` for each part. Results are cached by content hash, so later turns count only what changed. Parts that cannot be counted fall back to a local estimate, marked `≈`.
 
+`count_tokens` is the API's own counter, but the API documentation describes its result as an estimate: it can differ slightly from the `usage` the call itself reports. The prompt total in Anatomy is always the server's `usage`; the counts per part are `count_tokens` results.
+
 - **Thinking blocks.** Thinking blocks from earlier turns usually carry empty text and an encrypted signature, which still costs input tokens. They are counted in place with the request's `thinking` and `context_management` settings, or estimated from the signature length when counting is unavailable.
 - **Tool definitions.** Per-tool numbers are marginal costs. The API adds a fixed wrapper around any tool list; the wrapper appears as its own part.
+- **Images and documents.** `image` and `document` blocks, including those inside tool results, are counted as the real block, so a PDF shows its full cost. Local estimates do not cover them; with `--no-count` their cost appears as unattributed.
 - **Unattributed.** Any difference between the sum of parts and the server-reported prompt total is shown as "unattributed".
 
 `--no-count` disables count_tokens calls.
@@ -224,7 +250,7 @@ curl -s 'http://127.0.0.1:4142/agent-a/api/requests/<id>?full=1' # full analysis
 | GET | `api/sessions/<id>/graph` | session flow-graph data |
 | GET | `api/sources/<id>` | one inventory source with its content |
 | GET | `events` | server-sent events: `session`, `request`, `response`, `analysis`, `inventory`, `cleared`, `log` |
-| POST | `api/requests/<id>/recount` | re-analyse one call with exact counts |
+| POST | `api/requests/<id>/recount` | re-analyse one call with `count_tokens` |
 | POST | `api/rescan` | rescan the inventory |
 | POST | `api/clear` | delete all captured sessions |
 
@@ -253,6 +279,7 @@ memory for as long as the process runs.
 
 - Developed against Claude Code 2.1.x on macOS. Attribution rules key off the harness's current wording (`Contents of …`, `The following skills are available`, `# MCP Server Instructions`, `Primary working directory:`). If a Claude Code release changes those strings, affected spans fall back to `harness` or `reminder` until the patterns in `src/analyze.ts` are updated.
 - Claude Code must honour `ANTHROPIC_BASE_URL`. To chain an existing gateway, pass it with `--upstream`.
+- **Tool search.** Claude Code turns off MCP tool search when `ANTHROPIC_BASE_URL` points to a host other than the Anthropic API, so every MCP tool definition is sent in full and no `ToolSearch` calls appear. Captures made through the proxy therefore show more tool tokens than the same session without it. Set `ENABLE_TOOL_SEARCH=true` in the environment of `claude` to keep tool search on; the proxy forwards request bodies and headers unchanged, including `tool_reference` blocks.
 - The UI is two framework-free pages (`ui/index.html`, `ui/graph.html`) with compiled modules and vendored libraries. Browser coverage beyond recent Chromium-based browsers is untested.
 
 ## Development
@@ -285,6 +312,7 @@ Strict TypeScript compiled to ES modules. Dev dependencies are the TypeScript co
 | `ui/agents.ts` | agents timeline and spawn tree |
 | `ui/common.ts`, `ui/base.css` | shared helpers and styles |
 | `ui/vendor/` | d3 (ISC) and d3-sankey (BSD-3-Clause) |
+| `examples/` | Messages API scripts to run through the proxy |
 
 ## Contributing
 

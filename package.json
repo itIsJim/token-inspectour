@@ -1,7 +1,7 @@
 {
   "name": "token-inspectour",
   "version": "0.2.0",
-  "description": "Local proxy and browser UI that maps every span of each Claude Code request to the CLAUDE.md, skill, command, agent, hook, MCP, or harness source that produced it, with exact token counts per step.",
+  "description": "Local proxy and browser UI that maps every span of each Claude Code request to the CLAUDE.md, skill, command, agent, hook, MCP, or harness source that produced it, with token counts per step.",
   "type": "module",
   "bin": {
     "token-inspectour": "bin/token-inspectour.js"
@@ -10,6 +10,8 @@
     "bin",
     "dist/src",
     "ui",
+    "examples",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
